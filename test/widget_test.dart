@@ -1,30 +1,23 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
+import 'package:ai_advent_day_01/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:ai_advent_day_01/main.dart';
-
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
+  testWidgets('shows prompt input and send button', (tester) async {
     await tester.pumpWidget(const MyApp());
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    expect(find.text('DeepSeek Chat'), findsOneWidget);
+    expect(find.text('Ваш prompt'), findsOneWidget);
+    expect(find.text('Отправить'), findsOneWidget);
+    expect(find.text('Здесь появится ответ DeepSeek.'), findsOneWidget);
+  });
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
+  testWidgets('explains how to provide a missing API key', (tester) async {
+    await tester.pumpWidget(const MyApp());
+    await tester.enterText(find.byType(TextField), 'Привет');
+    await tester.tap(find.text('Отправить'));
     await tester.pump();
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(find.textContaining('API key не найден'), findsOneWidget);
   });
 }

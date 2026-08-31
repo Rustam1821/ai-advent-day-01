@@ -1,4 +1,23 @@
-# ai_advent_day_01
+# AI Advent Challenge — Day 1
+
+Минимальный Flutter-клиент для отправки prompt в DeepSeek и отображения ответа.
+
+## Запуск
+
+Передайте API key при запуске через compile-time переменную (ключ не хранится в
+репозитории):
+
+```sh
+flutter run --dart-define=DEEPSEEK_API_KEY=ваш_ключ
+```
+
+Для сборки используйте тот же параметр, например:
+
+```sh
+flutter build apk --dart-define=DEEPSEEK_API_KEY=ваш_ключ
+```
+
+Не добавляйте настоящий ключ в скрипты или конфигурационные файлы проекта.
 
 A new Flutter project.
 
