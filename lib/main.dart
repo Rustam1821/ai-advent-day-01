@@ -6,7 +6,9 @@ import 'package:http/http.dart' as http;
 const _apiKey = String.fromEnvironment('DEEPSEEK_API_KEY');
 const _endpoint = 'https://api.deepseek.com/chat/completions';
 const _model = 'deepseek-v4-flash';
-const _stopSequence = '<END>';
+const _task = '''
+Четырём людям нужно перейти мост ночью. У них один фонарь, без него идти нельзя. Мост выдерживает максимум двоих. Скорости людей: 1, 2, 7 и 10 минут на переход. Когда идут двое, они движутся со скоростью более медленного. Какое минимальное время нужно всем четверым, чтобы перейти мост? Укажи последовательность переходов и обоснуй минимальность.
+''';
 
 void main() => runApp(const MyApp());
 
@@ -16,113 +18,145 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'AI Advent — Day 2',
+      title: 'AI Advent — Day 3',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
       ),
-      home: const ComparePage(),
+      home: const PromptingExperimentPage(),
     );
   }
 }
 
-class ComparePage extends StatefulWidget {
-  const ComparePage({super.key});
+class PromptingExperimentPage extends StatefulWidget {
+  const PromptingExperimentPage({super.key});
 
   @override
-  State<ComparePage> createState() => _ComparePageState();
+  State<PromptingExperimentPage> createState() =>
+      _PromptingExperimentPageState();
 }
 
-class _ComparePageState extends State<ComparePage> {
-  final _promptController = TextEditingController();
-  _DeepSeekResult? _freeResult;
-  _DeepSeekResult? _controlledResult;
-  String _sentPrompt = '';
+class _PromptingExperimentPageState extends State<PromptingExperimentPage> {
+  _ApiResult? _direct;
+  _ApiResult? _stepByStep;
+  _ApiResult? _selfPrompting;
+  _ApiResult? _experts;
+  String? _generatedPrompt;
   String? _error;
   bool _isLoading = false;
 
-  @override
-  void dispose() {
-    _promptController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _compareAnswers() async {
-    final prompt = _promptController.text.trim();
-    if (prompt.isEmpty || _isLoading) return;
+  Future<void> _runExperiment() async {
+    if (_isLoading) return;
     if (_apiKey.isEmpty) {
-      setState(
-        () => _error =
+      setState(() {
+        _error =
             'API key не найден. Запустите приложение с '
-            '--dart-define-from-file=.env',
-      );
+            '--dart-define-from-file=.env';
+      });
       return;
     }
 
     setState(() {
       _isLoading = true;
-      _sentPrompt = prompt;
-      _freeResult = null;
-      _controlledResult = null;
+      _direct = null;
+      _stepByStep = null;
+      _selfPrompting = null;
+      _experts = null;
+      _generatedPrompt = null;
       _error = null;
     });
 
     try {
-      final results = await Future.wait([
-        _requestDeepSeek(prompt: prompt, controlled: false),
-        _requestDeepSeek(prompt: prompt, controlled: true),
+      await Future.wait([
+        _ask([
+          {
+            'role': 'system',
+            'content': 'Отвечай по-русски и кратко, не более 250 слов.',
+          },
+          {'role': 'user', 'content': _task},
+        ]).then((result) {
+          if (mounted) setState(() => _direct = result);
+        }),
+        _ask([
+          {
+            'role': 'system',
+            'content':
+                'Решай задачу пошагово. Сначала выдели ограничения, затем '
+                'перебери разумные стратегии, посчитай каждый шаг и отдельно '
+                'докажи, что найденное время минимально. Отвечай по-русски, '
+                'не более 250 слов.',
+          },
+          {'role': 'user', 'content': _task},
+        ]).then((result) {
+          if (mounted) setState(() => _stepByStep = result);
+        }),
+        _runSelfPrompting(),
+        _ask([
+          {
+            'role': 'system',
+            'content':
+                'Ты — консилиум из трёх экспертов. Аналитик формализует '
+                'ограничения и предлагает решение. Оптимизатор ищет более '
+                'быструю стратегию. Критик проверяет расчёты и минимальность. '
+                'Покажи краткое мнение каждого под отдельным заголовком, затем '
+                'дай согласованный итог консилиума. Каждой роли дай максимум '
+                'два предложения. Весь ответ — на русском, максимум 120 слов, '
+                'обязательно закончи числовым итогом.',
+          },
+          {'role': 'user', 'content': _task},
+        ]).then((result) {
+          if (mounted) setState(() => _experts = result);
+        }),
       ]);
-      if (!mounted) return;
-      setState(() {
-        _freeResult = results[0];
-        _controlledResult = results[1];
-      });
     } catch (error) {
-      if (mounted) {
-        setState(() => _error = 'Не удалось получить ответы: $error');
-      }
+      if (mounted) setState(() => _error = 'Ошибка эксперимента: $error');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  Future<_DeepSeekResult> _requestDeepSeek({
-    required String prompt,
-    required bool controlled,
-  }) async {
-    final messages = <Map<String, String>>[];
-    if (controlled) {
-      messages.add({
+  Future<void> _runSelfPrompting() async {
+    final promptResult = await _ask([
+      {
         'role': 'system',
         'content':
-            '''
-Return only valid JSON in exactly this format:
-{"title":"short title","summary":"up to 40 words","key_points":["point 1","point 2","point 3"]}
-Keep exactly these three fields and exactly 3 key_points. Each key point must be at most 12 words. Do not use Markdown. Immediately after the closing JSON brace emit $_stopSequence and finish.
-''',
-      });
-    }
-    messages.add({'role': 'user', 'content': prompt});
+            'Ты — prompt engineer. Создай самостоятельный, точный prompt, '
+            'который поможет другой LLM правильно решить переданную задачу. '
+            'Сохрани все исходные данные и потребуй проверить минимальность. '
+            'Потребуй ответить по-русски не более чем в 250 словах. Сам prompt '
+            'должен быть не длиннее 180 слов. Верни только готовый prompt.',
+      },
+      {
+        'role': 'user',
+        'content':
+            'Создай качественный prompt для решения этой задачи:\n$_task',
+      },
+    ]);
+    if (mounted) setState(() => _generatedPrompt = promptResult.content);
 
-    final body = <String, dynamic>{'model': _model, 'messages': messages};
-    if (controlled) {
-      body.addAll({
-        'thinking': {'type': 'disabled'},
-        'response_format': {'type': 'json_object'},
-        'max_tokens': 220,
-        'stop': [_stopSequence],
-      });
-    }
+    final solution = await _ask([
+      {'role': 'user', 'content': promptResult.content},
+    ]);
+    if (mounted) setState(() => _selfPrompting = solution);
+  }
 
+  Future<_ApiResult> _ask(List<Map<String, String>> messages) async {
     final response = await http.post(
       Uri.parse(_endpoint),
       headers: {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $_apiKey',
       },
-      body: jsonEncode(body),
+      body: jsonEncode({
+        'model': _model,
+        'thinking': {'type': 'disabled'},
+        'temperature': 0.3,
+        'max_tokens': 1000,
+        'messages': messages,
+      }),
     );
+
     final data = jsonDecode(response.body) as Map<String, dynamic>;
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final error = data['error'] as Map<String, dynamic>?;
@@ -137,156 +171,99 @@ Keep exactly these three fields and exactly 3 key_points. Each key point must be
       throw const FormatException('DeepSeek вернул пустой ответ');
     }
 
-    var displayContent = content.trim();
-    if (controlled) {
-      final json = jsonDecode(displayContent) as Map<String, dynamic>;
-      _validateControlledJson(json);
-      displayContent = const JsonEncoder.withIndent('  ').convert(json);
-    }
-
     final usage = data['usage'] as Map<String, dynamic>?;
-    return _DeepSeekResult(
-      content: displayContent,
-      finishReason: choice?['finish_reason'] as String? ?? 'unknown',
-      completionTokens: usage?['completion_tokens'] as int?,
+    return _ApiResult(
+      content: content.trim(),
+      tokens: usage?['completion_tokens'] as int?,
     );
-  }
-
-  void _validateControlledJson(Map<String, dynamic> json) {
-    const expectedKeys = {'title', 'summary', 'key_points'};
-    final keys = json.keys.toSet();
-    final points = json['key_points'];
-    if (keys.difference(expectedKeys).isNotEmpty ||
-        !keys.containsAll(expectedKeys) ||
-        json['title'] is! String ||
-        json['summary'] is! String ||
-        points is! List ||
-        points.length != 3 ||
-        points.any((point) => point is! String)) {
-      throw const FormatException(
-        'контролируемый ответ не соответствует заданной JSON-структуре',
-      );
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Day 2 · Формат ответа')),
+      appBar: AppBar(title: const Text('Day 3 · Prompting strategies')),
       body: SafeArea(
-        child: SingleChildScrollView(
+        child: ListView(
           padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text(
-                'Один prompt → два ответа',
-                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _promptController,
-                minLines: 3,
-                maxLines: 6,
-                decoration: const InputDecoration(
-                  labelText: 'Исходный prompt для обоих режимов',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: _isLoading ? null : _compareAnswers,
-                icon: _isLoading
-                    ? const SizedBox.square(
-                        dimension: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.compare_arrows),
-                label: Text(
-                  _isLoading ? 'Получаем оба ответа...' : 'Сравнить два ответа',
-                ),
-              ),
-              if (_sentPrompt.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text('Одинаковый prompt: “$_sentPrompt”'),
-                ),
-              ],
-              if (_error != null) ...[
-                const SizedBox(height: 16),
-                Text(_error!, style: const TextStyle(color: Colors.red)),
-              ],
-              const SizedBox(height: 16),
-              _AnswerCard(
-                title: '1 · Без ограничений',
-                subtitle: 'Только исходный prompt, без требований к ответу',
-                result: _freeResult,
-              ),
-              const SizedBox(height: 12),
-              _AnswerCard(
-                title: '2 · С контролем',
-                subtitle: 'JSON · 3 пункта · max 220 tokens · stop <END>',
-                result: _controlledResult,
-                controlled: true,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _AnswerCard extends StatelessWidget {
-  const _AnswerCard({
-    required this.title,
-    required this.subtitle,
-    required this.result,
-    this.controlled = false,
-  });
-
-  final String title;
-  final String subtitle;
-  final _DeepSeekResult? result;
-  final bool controlled;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      color: controlled ? Theme.of(context).colorScheme.primaryContainer : null,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              title,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            const Text(
+              'Одна задача → 4 стратегии',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
             ),
-            const SizedBox(height: 4),
-            Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
-            const Divider(height: 24),
-            SelectableText(
-              result?.content ?? 'Ответ появится здесь.',
-              style: controlled
-                  ? const TextStyle(fontFamily: 'monospace')
-                  : null,
-            ),
-            if (result != null) ...[
-              const SizedBox(height: 12),
-              Text(
-                'Завершение: ${result!.finishReason} · '
-                'токенов: ${result!.completionTokens ?? '—'}',
-                style: Theme.of(context).textTheme.labelSmall,
+            const SizedBox(height: 12),
+            const Card(
+              child: Padding(
+                padding: EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Задача',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    SizedBox(height: 8),
+                    Text(_task),
+                    Divider(height: 24),
+                    Text(
+                      'Правильный ответ для проверки: 17 минут',
+                      style: TextStyle(
+                        color: Colors.green,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
               ),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: _isLoading ? null : _runExperiment,
+              icon: _isLoading
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.science),
+              label: Text(
+                _isLoading
+                    ? 'DeepSeek выполняет 5 вызовов...'
+                    : 'Запустить эксперимент',
+              ),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 12),
+              Text(_error!, style: const TextStyle(color: Colors.red)),
             ],
+            const SizedBox(height: 16),
+            _ResultTile(
+              number: 1,
+              title: 'Direct',
+              subtitle: 'Исходная задача без стратегии',
+              result: _direct,
+              loading: _isLoading,
+            ),
+            _ResultTile(
+              number: 2,
+              title: 'Step-by-step',
+              subtitle: 'Ограничения → варианты → проверка',
+              result: _stepByStep,
+              loading: _isLoading,
+            ),
+            _ResultTile(
+              number: 3,
+              title: 'Self-prompting',
+              subtitle: 'Call 1: prompt → Call 2: решение',
+              result: _selfPrompting,
+              loading: _isLoading,
+              generatedPrompt: _generatedPrompt,
+            ),
+            _ResultTile(
+              number: 4,
+              title: 'Experts',
+              subtitle: 'Аналитик + оптимизатор + критик',
+              result: _experts,
+              loading: _isLoading,
+            ),
           ],
         ),
       ),
@@ -294,14 +271,84 @@ class _AnswerCard extends StatelessWidget {
   }
 }
 
-class _DeepSeekResult {
-  const _DeepSeekResult({
-    required this.content,
-    required this.finishReason,
-    required this.completionTokens,
+class _ResultTile extends StatelessWidget {
+  const _ResultTile({
+    required this.number,
+    required this.title,
+    required this.subtitle,
+    required this.result,
+    required this.loading,
+    this.generatedPrompt,
   });
 
+  final int number;
+  final String title;
+  final String subtitle;
+  final _ApiResult? result;
+  final bool loading;
+  final String? generatedPrompt;
+
+  @override
+  Widget build(BuildContext context) {
+    final isReady = result != null;
+    return Card(
+      child: ExpansionTile(
+        leading: CircleAvatar(
+          child: isReady
+              ? const Icon(Icons.check, color: Colors.green)
+              : Text('$number'),
+        ),
+        title: Text(
+          '$number · $title',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        subtitle: Text(
+          isReady
+              ? '$subtitle · ${result!.tokens ?? '—'} токенов'
+              : loading
+              ? title == 'Self-prompting' && generatedPrompt != null
+                    ? 'Call 1 готов, выполняется Call 2...'
+                    : 'Выполняется...'
+              : subtitle,
+        ),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        children: [
+          if (generatedPrompt != null) ...[
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Generated prompt (Call 1)',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+            const SizedBox(height: 6),
+            SelectableText(generatedPrompt!),
+            const Divider(height: 24),
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Итоговое решение (Call 2)',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+            const SizedBox(height: 6),
+          ],
+          Align(
+            alignment: Alignment.centerLeft,
+            child: SelectableText(
+              result?.content ??
+                  (loading ? 'Ожидаем ответ DeepSeek...' : 'Ещё не запущено.'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ApiResult {
+  const _ApiResult({required this.content, required this.tokens});
+
   final String content;
-  final String finishReason;
-  final int? completionTokens;
+  final int? tokens;
 }
