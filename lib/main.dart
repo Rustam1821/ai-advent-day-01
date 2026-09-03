@@ -6,9 +6,13 @@ import 'package:http/http.dart' as http;
 const _apiKey = String.fromEnvironment('DEEPSEEK_API_KEY');
 const _endpoint = 'https://api.deepseek.com/chat/completions';
 const _model = 'deepseek-v4-flash';
-const _task = '''
-Четырём людям нужно перейти мост ночью. У них один фонарь, без него идти нельзя. Мост выдерживает максимум двоих. Скорости людей: 1, 2, 7 и 10 минут на переход. Когда идут двое, они движутся со скоростью более медленного. Какое минимальное время нужно всем четверым, чтобы перейти мост? Укажи последовательность переходов и обоснуй минимальность.
+const _systemPrompt = '''
+Ты — креативный русскоязычный копирайтер. Строго соблюдай все ограничения пользователя. Не объясняй свой выбор, выведи только готовый результат.
 ''';
+const _userPrompt = '''
+Придумай название и рекламный слоган для новой кофейни на Марсе. Название должно состоять максимум из двух слов. Слоган должен содержать слово «кофе» и быть не длиннее 10 слов. Кратко объясни идею названия. Оформи ответ тремя строками: «Название», «Слоган» и «Идея».
+''';
+const _temperatures = [0.0, 0.7, 1.2];
 
 void main() => runApp(const MyApp());
 
@@ -18,31 +22,27 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'AI Advent — Day 3',
+      title: 'AI Advent — Day 4',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepOrange),
         useMaterial3: true,
       ),
-      home: const PromptingExperimentPage(),
+      home: const TemperatureExperimentPage(),
     );
   }
 }
 
-class PromptingExperimentPage extends StatefulWidget {
-  const PromptingExperimentPage({super.key});
+class TemperatureExperimentPage extends StatefulWidget {
+  const TemperatureExperimentPage({super.key});
 
   @override
-  State<PromptingExperimentPage> createState() =>
-      _PromptingExperimentPageState();
+  State<TemperatureExperimentPage> createState() =>
+      _TemperatureExperimentPageState();
 }
 
-class _PromptingExperimentPageState extends State<PromptingExperimentPage> {
-  _ApiResult? _direct;
-  _ApiResult? _stepByStep;
-  _ApiResult? _selfPrompting;
-  _ApiResult? _experts;
-  String? _generatedPrompt;
+class _TemperatureExperimentPageState extends State<TemperatureExperimentPage> {
+  final Map<double, _ApiResult> _results = {};
   String? _error;
   bool _isLoading = false;
 
@@ -59,56 +59,19 @@ class _PromptingExperimentPageState extends State<PromptingExperimentPage> {
 
     setState(() {
       _isLoading = true;
-      _direct = null;
-      _stepByStep = null;
-      _selfPrompting = null;
-      _experts = null;
-      _generatedPrompt = null;
+      _results.clear();
       _error = null;
     });
 
     try {
-      await Future.wait([
-        _ask([
-          {
-            'role': 'system',
-            'content': 'Отвечай по-русски и кратко, не более 250 слов.',
-          },
-          {'role': 'user', 'content': _task},
-        ]).then((result) {
-          if (mounted) setState(() => _direct = result);
+      await Future.wait(
+        _temperatures.map((temperature) async {
+          final result = await _askDeepSeek(temperature);
+          if (mounted) {
+            setState(() => _results[temperature] = result);
+          }
         }),
-        _ask([
-          {
-            'role': 'system',
-            'content':
-                'Решай задачу пошагово. Сначала выдели ограничения, затем '
-                'перебери разумные стратегии, посчитай каждый шаг и отдельно '
-                'докажи, что найденное время минимально. Отвечай по-русски, '
-                'не более 250 слов.',
-          },
-          {'role': 'user', 'content': _task},
-        ]).then((result) {
-          if (mounted) setState(() => _stepByStep = result);
-        }),
-        _runSelfPrompting(),
-        _ask([
-          {
-            'role': 'system',
-            'content':
-                'Ты — консилиум из трёх экспертов. Аналитик формализует '
-                'ограничения и предлагает решение. Оптимизатор ищет более '
-                'быструю стратегию. Критик проверяет расчёты и минимальность. '
-                'Покажи краткое мнение каждого под отдельным заголовком, затем '
-                'дай согласованный итог консилиума. Каждой роли дай максимум '
-                'два предложения. Весь ответ — на русском, максимум 120 слов, '
-                'обязательно закончи числовым итогом.',
-          },
-          {'role': 'user', 'content': _task},
-        ]).then((result) {
-          if (mounted) setState(() => _experts = result);
-        }),
-      ]);
+      );
     } catch (error) {
       if (mounted) setState(() => _error = 'Ошибка эксперимента: $error');
     } finally {
@@ -116,32 +79,7 @@ class _PromptingExperimentPageState extends State<PromptingExperimentPage> {
     }
   }
 
-  Future<void> _runSelfPrompting() async {
-    final promptResult = await _ask([
-      {
-        'role': 'system',
-        'content':
-            'Ты — prompt engineer. Создай самостоятельный, точный prompt, '
-            'который поможет другой LLM правильно решить переданную задачу. '
-            'Сохрани все исходные данные и потребуй проверить минимальность. '
-            'Потребуй ответить по-русски не более чем в 250 словах. Сам prompt '
-            'должен быть не длиннее 180 слов. Верни только готовый prompt.',
-      },
-      {
-        'role': 'user',
-        'content':
-            'Создай качественный prompt для решения этой задачи:\n$_task',
-      },
-    ]);
-    if (mounted) setState(() => _generatedPrompt = promptResult.content);
-
-    final solution = await _ask([
-      {'role': 'user', 'content': promptResult.content},
-    ]);
-    if (mounted) setState(() => _selfPrompting = solution);
-  }
-
-  Future<_ApiResult> _ask(List<Map<String, String>> messages) async {
+  Future<_ApiResult> _askDeepSeek(double temperature) async {
     final response = await http.post(
       Uri.parse(_endpoint),
       headers: {
@@ -151,9 +89,12 @@ class _PromptingExperimentPageState extends State<PromptingExperimentPage> {
       body: jsonEncode({
         'model': _model,
         'thinking': {'type': 'disabled'},
-        'temperature': 0.3,
-        'max_tokens': 1000,
-        'messages': messages,
+        'temperature': temperature,
+        'max_tokens': 350,
+        'messages': [
+          {'role': 'system', 'content': _systemPrompt},
+          {'role': 'user', 'content': _userPrompt},
+        ],
       }),
     );
 
@@ -181,13 +122,13 @@ class _PromptingExperimentPageState extends State<PromptingExperimentPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Day 3 · Prompting strategies')),
+      appBar: AppBar(title: const Text('Day 4 · Temperature')),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
             const Text(
-              'Одна задача → 4 стратегии',
+              'Один prompt → 3 температуры',
               style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 12),
@@ -198,18 +139,16 @@ class _PromptingExperimentPageState extends State<PromptingExperimentPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Задача',
+                      'Одинаковый prompt',
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                     SizedBox(height: 8),
-                    Text(_task),
+                    Text(_userPrompt),
                     Divider(height: 24),
                     Text(
-                      'Правильный ответ для проверки: 17 минут',
-                      style: TextStyle(
-                        color: Colors.green,
-                        fontWeight: FontWeight.bold,
-                      ),
+                      'Модель, system prompt и все остальные параметры '
+                      'одинаковы. Меняется только temperature.',
+                      style: TextStyle(fontSize: 12),
                     ),
                   ],
                 ),
@@ -223,10 +162,10 @@ class _PromptingExperimentPageState extends State<PromptingExperimentPage> {
                       dimension: 18,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.science),
+                  : const Icon(Icons.thermostat),
               label: Text(
                 _isLoading
-                    ? 'DeepSeek выполняет 5 вызовов...'
+                    ? 'DeepSeek выполняет 3 запроса...'
                     : 'Запустить эксперимент',
               ),
             ),
@@ -235,34 +174,17 @@ class _PromptingExperimentPageState extends State<PromptingExperimentPage> {
               Text(_error!, style: const TextStyle(color: Colors.red)),
             ],
             const SizedBox(height: 16),
-            _ResultTile(
-              number: 1,
-              title: 'Direct',
-              subtitle: 'Исходная задача без стратегии',
-              result: _direct,
-              loading: _isLoading,
-            ),
-            _ResultTile(
-              number: 2,
-              title: 'Step-by-step',
-              subtitle: 'Ограничения → варианты → проверка',
-              result: _stepByStep,
-              loading: _isLoading,
-            ),
-            _ResultTile(
-              number: 3,
-              title: 'Self-prompting',
-              subtitle: 'Call 1: prompt → Call 2: решение',
-              result: _selfPrompting,
-              loading: _isLoading,
-              generatedPrompt: _generatedPrompt,
-            ),
-            _ResultTile(
-              number: 4,
-              title: 'Experts',
-              subtitle: 'Аналитик + оптимизатор + критик',
-              result: _experts,
-              loading: _isLoading,
+            for (final temperature in _temperatures)
+              _TemperatureCard(
+                temperature: temperature,
+                result: _results[temperature],
+                loading: _isLoading,
+              ),
+            const SizedBox(height: 8),
+            const Text(
+              'Обычно низкая temperature даёт более предсказуемые формулировки, '
+              'а высокая — больше вариативности. Сравните реальные ответы выше.',
+              style: TextStyle(fontSize: 12),
             ),
           ],
         ),
@@ -271,68 +193,47 @@ class _PromptingExperimentPageState extends State<PromptingExperimentPage> {
   }
 }
 
-class _ResultTile extends StatelessWidget {
-  const _ResultTile({
-    required this.number,
-    required this.title,
-    required this.subtitle,
+class _TemperatureCard extends StatelessWidget {
+  const _TemperatureCard({
+    required this.temperature,
     required this.result,
     required this.loading,
-    this.generatedPrompt,
   });
 
-  final int number;
-  final String title;
-  final String subtitle;
+  final double temperature;
   final _ApiResult? result;
   final bool loading;
-  final String? generatedPrompt;
+
+  String get _label => switch (temperature) {
+    0 => 'Минимальная вариативность',
+    0.7 => 'Средняя вариативность',
+    _ => 'Высокая вариативность',
+  };
 
   @override
   Widget build(BuildContext context) {
     final isReady = result != null;
     return Card(
+      margin: const EdgeInsets.only(bottom: 12),
       child: ExpansionTile(
         leading: CircleAvatar(
           child: isReady
               ? const Icon(Icons.check, color: Colors.green)
-              : Text('$number'),
+              : const Icon(Icons.thermostat),
         ),
         title: Text(
-          '$number · $title',
+          'temperature = ${temperature.toStringAsFixed(temperature == 0 ? 0 : 1)}',
           style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         subtitle: Text(
           isReady
-              ? '$subtitle · ${result!.tokens ?? '—'} токенов'
+              ? '$_label · ${result!.tokens ?? '—'} токенов'
               : loading
-              ? title == 'Self-prompting' && generatedPrompt != null
-                    ? 'Call 1 готов, выполняется Call 2...'
-                    : 'Выполняется...'
-              : subtitle,
+              ? 'Выполняется...'
+              : _label,
         ),
         childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         children: [
-          if (generatedPrompt != null) ...[
-            const Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'Generated prompt (Call 1)',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ),
-            const SizedBox(height: 6),
-            SelectableText(generatedPrompt!),
-            const Divider(height: 24),
-            const Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'Итоговое решение (Call 2)',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ),
-            const SizedBox(height: 6),
-          ],
           Align(
             alignment: Alignment.centerLeft,
             child: SelectableText(

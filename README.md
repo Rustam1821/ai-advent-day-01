@@ -1,11 +1,7 @@
-# AI Advent Challenge — Day 3
+# AI Advent Challenge — Day 4
 
-Одна логическая задача решается через DeepSeek четырьмя prompting strategies:
-Direct, Step-by-step, Self-prompting и Experts.
-
-Self-prompting использует два последовательных API-вызова: сначала создаётся
-улучшенный prompt, затем новый вызов решает задачу по этому prompt. Один запуск
-эксперимента выполняет пять API-вызовов.
+Один prompt трижды отправляется в DeepSeek с `temperature` 0, 0.7 и 1.2.
+Модель, system prompt и остальные API-параметры во всех запросах одинаковы.
 
 ## Запуск
 
@@ -14,6 +10,9 @@ API key хранится только в локальном `.env`, которы
 ```env
 DEEPSEEK_API_KEY=ваш_ключ
 ```
+
+В VS Code достаточно запустить конфигурацию `ai_advent_day_01` через Run/F5.
+Запуск из терминала:
 
 ```sh
 flutter run --dart-define-from-file=.env
