@@ -1,190 +1,219 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+
+import 'experiment.dart';
 
 const _apiKey = String.fromEnvironment('DEEPSEEK_API_KEY');
-const _endpoint = 'https://api.deepseek.com/chat/completions';
-const _model = 'deepseek-v4-flash';
-const _systemPrompt = '''
-Ты — креативный русскоязычный копирайтер. Строго соблюдай все ограничения пользователя. Не объясняй свой выбор, выведи только готовый результат.
-''';
-const _userPrompt = '''
-Придумай название и рекламный слоган для новой кофейни на Марсе. Название должно состоять максимум из двух слов. Слоган должен содержать слово «кофе» и быть не длиннее 10 слов. Кратко объясни идею названия. Оформи ответ тремя строками: «Название», «Слоган» и «Идея».
-''';
-const _temperatures = [0.0, 0.7, 1.2];
 
 void main() => runApp(const MyApp());
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
-
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'AI Advent — Day 4',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepOrange),
-        useMaterial3: true,
-      ),
-      home: const TemperatureExperimentPage(),
-    );
-  }
+  Widget build(BuildContext context) => MaterialApp(
+    title: 'AI Advent — Day 5',
+    debugShowCheckedModeBanner: false,
+    theme: ThemeData(
+      colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4154B3)),
+      scaffoldBackgroundColor: const Color(0xFFF5F6FA),
+      useMaterial3: true,
+    ),
+    home: const ModelComparisonPage(),
+  );
 }
 
-class TemperatureExperimentPage extends StatefulWidget {
-  const TemperatureExperimentPage({super.key});
-
+class ModelComparisonPage extends StatefulWidget {
+  const ModelComparisonPage({super.key});
   @override
-  State<TemperatureExperimentPage> createState() =>
-      _TemperatureExperimentPageState();
+  State<ModelComparisonPage> createState() => _ModelComparisonPageState();
 }
 
-class _TemperatureExperimentPageState extends State<TemperatureExperimentPage> {
-  final Map<double, _ApiResult> _results = {};
-  String? _error;
-  bool _isLoading = false;
+class _ModelComparisonPageState extends State<ModelComparisonPage> {
+  final Map<String, ApiResult> _results = {};
+  bool _running = false;
 
-  Future<void> _runExperiment() async {
-    if (_isLoading) return;
-    if (_apiKey.isEmpty) {
-      setState(() {
-        _error =
-            'API key не найден. Запустите приложение с '
-            '--dart-define-from-file=.env';
-      });
-      return;
-    }
-
+  Future<void> _run() async {
+    if (_running) return;
     setState(() {
-      _isLoading = true;
+      _running = true;
       _results.clear();
-      _error = null;
     });
-
-    try {
-      await Future.wait(
-        _temperatures.map((temperature) async {
-          final result = await _askDeepSeek(temperature);
-          if (mounted) {
-            setState(() => _results[temperature] = result);
-          }
-        }),
-      );
-    } catch (error) {
-      if (mounted) setState(() => _error = 'Ошибка эксперимента: $error');
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  Future<_ApiResult> _askDeepSeek(double temperature) async {
-    final response = await http.post(
-      Uri.parse(_endpoint),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_apiKey',
-      },
-      body: jsonEncode({
-        'model': _model,
-        'thinking': {'type': 'disabled'},
-        'temperature': temperature,
-        'max_tokens': 350,
-        'messages': [
-          {'role': 'system', 'content': _systemPrompt},
-          {'role': 'user', 'content': _userPrompt},
-        ],
+    await Future.wait(
+      models.map((model) async {
+        final result = await askModel(model, _apiKey);
+        if (mounted) setState(() => _results[model.id] = result);
       }),
     );
-
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      final error = data['error'] as Map<String, dynamic>?;
-      throw Exception(error?['message'] ?? 'HTTP ${response.statusCode}');
-    }
-
-    final choices = data['choices'] as List<dynamic>?;
-    final choice = choices?.firstOrNull as Map<String, dynamic>?;
-    final message = choice?['message'] as Map<String, dynamic>?;
-    final content = message?['content'] as String?;
-    if (content == null || content.trim().isEmpty) {
-      throw const FormatException('DeepSeek вернул пустой ответ');
-    }
-
-    final usage = data['usage'] as Map<String, dynamic>?;
-    return _ApiResult(
-      content: content.trim(),
-      tokens: usage?['completion_tokens'] as int?,
-    );
+    if (mounted) setState(() => _running = false);
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Day 4 · Temperature')),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            const Text(
-              'Один prompt → 3 температуры',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 12),
-            const Card(
-              child: Padding(
-                padding: EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Одинаковый prompt',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    SizedBox(height: 8),
-                    Text(_userPrompt),
-                    Divider(height: 24),
-                    Text(
-                      'Модель, system prompt и все остальные параметры '
-                      'одинаковы. Меняется только temperature.',
-                      style: TextStyle(fontSize: 12),
-                    ),
-                  ],
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Day 5 · Сравнение моделей')),
+    body: SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 1440),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Один prompt. Три модели.',
+                  style: Theme.of(context).textTheme.headlineSmall,
                 ),
-              ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Качество · Время полного ответа · Токены · Стоимость',
+                ),
+                const SizedBox(height: 12),
+                Card(
+                  child: ExpansionTile(
+                    initiallyExpanded: true,
+                    title: const Text('Общий user prompt'),
+                    childrenPadding: const EdgeInsets.all(16),
+                    children: const [SelectableText(userPrompt)],
+                  ),
+                ),
+                Card(
+                  child: ExpansionTile(
+                    title: const Text('Одинаковые условия эксперимента'),
+                    subtitle: const Text(
+                      'temperature 0 · max tokens 1600 · без streaming',
+                    ),
+                    childrenPadding: const EdgeInsets.all(16),
+                    children: const [
+                      SelectableText(
+                        'System prompt:\n$systemPrompt\n\n'
+                        'top_p: 1; frequency_penalty: 0; presence_penalty: 0; '
+                        'n: 1; response_format: text; thinking: disabled. '
+                        'Меняется только model. Запросы запускаются параллельно, '
+                        'без автоматических повторов.\n\n'
+                        'Flash — условно Weak, Pro — условно Strong. Vision — '
+                        'экспериментальная версия Flash, не подтверждённый Medium. '
+                        'Это три модели, но не строгая градация Weak / Medium / Strong. ',
+                      ),
+                    ],
+                  ),
+                ),
+                if (_apiKey.trim().isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 12),
+                    child: Text(
+                      'Для запуска нужен DEEPSEEK_API_KEY в .env и полный '
+                      'перезапуск с --dart-define-from-file=.env.',
+                    ),
+                  ),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  onPressed: _running ? null : _run,
+                  icon: _running
+                      ? const SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.play_arrow),
+                  label: Text(
+                    _running
+                        ? 'Готово ${_results.length} / 3…'
+                        : 'Сравнить три модели',
+                  ),
+                ),
+                const SizedBox(height: 16),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final cards = [
+                      for (final model in models)
+                        _ResultCard(
+                          model: model,
+                          result: _results[model.id],
+                          running: _running,
+                        ),
+                    ];
+                    if (constraints.maxWidth >= 1000) {
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (final card in cards) Expanded(child: card),
+                        ],
+                      );
+                    }
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: cards,
+                    );
+                  },
+                ),
+                _ComparisonSummary(results: _results, running: _running),
+              ],
             ),
-            const SizedBox(height: 12),
-            FilledButton.icon(
-              onPressed: _isLoading ? null : _runExperiment,
-              icon: _isLoading
-                  ? const SizedBox.square(
-                      dimension: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.thermostat),
-              label: Text(
-                _isLoading
-                    ? 'DeepSeek выполняет 3 запроса...'
-                    : 'Запустить эксперимент',
-              ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class _ResultCard extends StatelessWidget {
+  const _ResultCard({
+    required this.model,
+    required this.result,
+    required this.running,
+  });
+  final ModelSpec model;
+  final ApiResult? result;
+  final bool running;
+
+  @override
+  Widget build(BuildContext context) {
+    final r = result;
+    final pending = running && r == null;
+    String tokens(int? value) => value?.toString() ?? 'N/A';
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(model.category, style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 4),
+            SelectableText(model.id, style: const TextStyle(fontSize: 13)),
+            const Divider(height: 24),
+            Text(
+              '${r?.error != null ? 'Время до ошибки' : 'Response time'}: '
+              '${r?.elapsed == null ? 'N/A' : '${(r!.elapsed!.inMilliseconds / 1000).toStringAsFixed(3)} с'}',
             ),
-            if (_error != null) ...[
-              const SizedBox(height: 12),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
-            ],
-            const SizedBox(height: 16),
-            for (final temperature in _temperatures)
-              _TemperatureCard(
-                temperature: temperature,
-                result: _results[temperature],
-                loading: _isLoading,
+            Text(
+              'Tokens · input: ${tokens(r?.input)} · output: ${tokens(r?.output)}',
+            ),
+            Text(
+              'Total: ${tokens(r?.total)} · cached input: ${tokens(r?.cached)}',
+            ),
+            Text(
+              'Cost: ${r?.cost == null ? 'N/A' : '\$${r!.cost!.toStringAsFixed(6)} USD (расчёт)'}',
+            ),
+            const Divider(height: 24),
+            if (pending) const LinearProgressIndicator(),
+            if (r?.error != null)
+              Text(
+                r!.error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
               ),
+            if (r?.finishReason != null && r!.finishReason != 'stop')
+              Text(
+                'Ответ не завершён: ${r.finishReason}. Учитывайте это при сравнении.',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            if (r?.actualModel != null && r!.actualModel != model.id)
+              Text('API вернул модель: ${r.actualModel}'),
             const SizedBox(height: 8),
-            const Text(
-              'Обычно низкая temperature даёт более предсказуемые формулировки, '
-              'а высокая — больше вариативности. Сравните реальные ответы выше.',
-              style: TextStyle(fontSize: 12),
+            SelectableText(
+              r?.content ??
+                  (pending
+                      ? 'Ожидаем полный ответ…'
+                      : r?.error == null
+                      ? 'Ещё не запущено.'
+                      : 'Ответ не получен.'),
             ),
           ],
         ),
@@ -193,63 +222,106 @@ class _TemperatureExperimentPageState extends State<TemperatureExperimentPage> {
   }
 }
 
-class _TemperatureCard extends StatelessWidget {
-  const _TemperatureCard({
-    required this.temperature,
-    required this.result,
-    required this.loading,
-  });
+class _ComparisonSummary extends StatelessWidget {
+  const _ComparisonSummary({required this.results, required this.running});
 
-  final double temperature;
-  final _ApiResult? result;
-  final bool loading;
+  final Map<String, ApiResult> results;
+  final bool running;
 
-  String get _label => switch (temperature) {
-    0 => 'Минимальная вариативность',
-    0.7 => 'Средняя вариативность',
-    _ => 'Высокая вариативность',
+  String _name(ModelSpec model) => switch (model.id) {
+    'deepseek-v4-flash' => 'Flash',
+    'deepseek-v4-flash-vision-exp' => 'Vision',
+    _ => 'Pro',
   };
+
+  bool _complete(ModelSpec model) {
+    final result = results[model.id];
+    return result != null && result.error == null &&
+        result.finishReason == 'stop' && result.actualModel == model.id &&
+        (result.content?.trim().isNotEmpty ?? false);
+  }
+
+  String _extreme(String title, num? Function(ApiResult) metric,
+      String Function(num) format, {bool maximum = false}) {
+    final available = models.where((model) =>
+        _complete(model) && metric(results[model.id]!) != null).toList();
+    if (available.length < 2) {
+      return '$title: недостаточно сопоставимых данных.';
+    }
+    final values = available.map((model) => metric(results[model.id]!)!);
+    final extreme = values.reduce((a, b) =>
+        maximum ? (a > b ? a : b) : (a < b ? a : b));
+    final names = available.where((model) =>
+        metric(results[model.id]!) == extreme).map(_name).join(', ');
+    final scope = available.length == models.length
+        ? '' : ' (среди ${available.length} моделей с полными данными)';
+    return '$title: $names — ${format(extreme)}$scope.';
+  }
 
   @override
   Widget build(BuildContext context) {
-    final isReady = result != null;
+    final finished = !running && results.length == models.length;
     return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: ExpansionTile(
-        leading: CircleAvatar(
-          child: isReady
-              ? const Icon(Icons.check, color: Colors.green)
-              : const Icon(Icons.thermostat),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Сравнительный анализ',
+                style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 12),
+            if (!finished)
+              Text(running ? 'Собираем результаты: ${results.length} / 3…'
+                  : 'Запустите три модели, чтобы сравнить результаты.'),
+            if (results.isNotEmpty) ...[
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: DataTable(
+                  columnSpacing: 20,
+                  columns: const [
+                    DataColumn(label: Text('Модель')),
+                    DataColumn(label: Text('Время, с'), numeric: true),
+                    DataColumn(label: Text('Output'), numeric: true),
+                    DataColumn(label: Text('Total'), numeric: true),
+                    DataColumn(label: Text('Cost, USD'), numeric: true),
+                  ],
+                  rows: [for (final model in models)
+                    DataRow(cells: [
+                      DataCell(Text(_name(model))),
+                      DataCell(Text(results[model.id]?.error != null ||
+                          results[model.id]?.elapsed == null ? 'N/A' :
+                          (results[model.id]!.elapsed!.inMilliseconds / 1000)
+                              .toStringAsFixed(3))),
+                      DataCell(Text(results[model.id]?.output?.toString() ?? 'N/A')),
+                      DataCell(Text(results[model.id]?.total?.toString() ?? 'N/A')),
+                      DataCell(Text(results[model.id]?.cost?.toStringAsFixed(6) ?? 'N/A')),
+                    ]),
+                  ],
+                ),
+              ),
+            ],
+            if (finished) ...[
+              const SizedBox(height: 12),
+              Text(_extreme('Самая быстрая',
+                  (r) => r.elapsed?.inMilliseconds,
+                  (v) => '${(v / 1000).toStringAsFixed(3)} с')),
+              const SizedBox(height: 6),
+              Text(_extreme('Самая дешёвая',
+                  (r) => r.cost, (v) => '\$${v.toStringAsFixed(6)}')),
+              const SizedBox(height: 6),
+              Text(_extreme('Самая дорогая',
+                  (r) => r.cost, (v) => '\$${v.toStringAsFixed(6)}',
+                  maximum: true)),
+              const SizedBox(height: 6),
+              Text(_extreme('Меньше всего токенов',
+                  (r) => r.total, (v) => '$v')),
+              const SizedBox(height: 6),
+              Text(_extreme('Больше всего токенов',
+                  (r) => r.total, (v) => '$v', maximum: true)),
+            ],
+          ],
         ),
-        title: Text(
-          'temperature = ${temperature.toStringAsFixed(temperature == 0 ? 0 : 1)}',
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        subtitle: Text(
-          isReady
-              ? '$_label · ${result!.tokens ?? '—'} токенов'
-              : loading
-              ? 'Выполняется...'
-              : _label,
-        ),
-        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-        children: [
-          Align(
-            alignment: Alignment.centerLeft,
-            child: SelectableText(
-              result?.content ??
-                  (loading ? 'Ожидаем ответ DeepSeek...' : 'Ещё не запущено.'),
-            ),
-          ),
-        ],
       ),
     );
   }
-}
-
-class _ApiResult {
-  const _ApiResult({required this.content, required this.tokens});
-
-  final String content;
-  final int? tokens;
 }
