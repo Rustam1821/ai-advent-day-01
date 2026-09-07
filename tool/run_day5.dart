@@ -1,4 +1,4 @@
-// Manual live API check using the same request builder and timing as the UI.
+// Archived Day 5 manual comparison using Agent for requests and timing.
 // Run: dart run tool/run_day5.dart
 import 'dart:convert';
 
@@ -20,13 +20,6 @@ Future<void> main(List<String> args) async {
     env[line.substring(0, split).trim()] = value;
   }
   final deepSeekKey = env['DEEPSEEK_API_KEY'] ?? '';
-  final canonical = requestBody(models.first.id)..remove('model');
-  for (final model in models) {
-    final payload = requestBody(model.id)..remove('model');
-    if (jsonEncode(payload) != jsonEncode(canonical)) {
-      throw StateError('Request parameters differ');
-    }
-  }
   await Future.wait(
     models.map((model) async {
       final r = await askModel(model, deepSeekKey);
