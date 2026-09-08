@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'history_storage.dart';
+
 class ModelSpec {
   const ModelSpec(
     this.category,
@@ -70,16 +72,55 @@ class AgentConfig {
   final int maxTokens;
 }
 
-/// Completed exchange for display; contains no API roles or JSON.
+/// Display projection, including a user message awaiting an answer.
 class AgentTurn {
-  const AgentTurn({required this.userText, required this.result});
+  const AgentTurn({required this.userText, this.result});
   final String userText;
-  final ApiResult result;
+  final ApiResult? result;
 }
 
 class Agent {
-  Agent(this.config, {String? apiKey})
+  Agent(this.config, {String? apiKey, this.storage})
     : _apiKey = apiKey ?? const String.fromEnvironment('DEEPSEEK_API_KEY');
+  final HistoryStorage? storage;
+  Future<void>? _initialization;
+  String? storageWarning;
+
+  Future<void> initialize() => _initialization ??= _restore();
+
+  Future<void> _restore() async {
+    try {
+      final saved = await storage?.load() ?? <Map<String, String>>[];
+      _messages.addAll(saved);
+      for (final message in saved) {
+        if (message['role'] == 'user') {
+          _turns.add(AgentTurn(userText: message['content']!));
+        } else if (_turns.isNotEmpty && _turns.last.result == null) {
+          final pending = _turns.removeLast();
+          _turns.add(
+            AgentTurn(
+              userText: pending.userText,
+              result: ApiResult(content: message['content']),
+            ),
+          );
+        }
+      }
+    } catch (_) {
+      storageWarning = 'Не удалось прочитать историю. Начат пустой диалог.';
+    }
+  }
+
+  Future<bool> _save() async {
+    try {
+      await storage?.save(_messages);
+      storageWarning = null;
+      return true;
+    } catch (_) {
+      storageWarning = 'Не удалось сохранить историю. Проверьте свободное место и повторите попытку.';
+      return false;
+    }
+  }
+
   final AgentConfig config;
   final String _apiKey;
   final List<Map<String, String>> _messages = [];
@@ -95,14 +136,23 @@ class Agent {
     }
     _sending = true;
     try {
-      final result = await _request(text);
-      // Commit successful exchanges only, so retrying an error cannot duplicate context.
+      await initialize();
+      // Retry the last unanswered message without appending it twice.
+      final retry =
+          _messages.isNotEmpty &&
+          _messages.last['role'] == 'user' &&
+          _messages.last['content'] == text;
+      if (!retry) {
+        _messages.add({'role': 'user', 'content': text});
+        _turns.add(AgentTurn(userText: text));
+      }
+      // Never start the network request before the user message is on disk.
+      if (!await _save()) return ApiResult(error: storageWarning);
+      final result = await _request();
       if (result.error == null) {
-        _messages.addAll([
-          {'role': 'user', 'content': text},
-          {'role': 'assistant', 'content': result.content!},
-        ]);
-        _turns.add(AgentTurn(userText: text, result: result));
+        _messages.add({'role': 'assistant', 'content': result.content!});
+        _turns[_turns.length - 1] = AgentTurn(userText: text, result: result);
+        await _save();
       }
       return result;
     } finally {
@@ -110,7 +160,7 @@ class Agent {
     }
   }
 
-  Future<ApiResult> _request(String message) async {
+  Future<ApiResult> _request() async {
     final model = config.model;
     final key = _apiKey;
     if (key.trim().isEmpty) {
@@ -126,7 +176,6 @@ class Agent {
         if (config.systemPrompt.isNotEmpty)
           {'role': 'system', 'content': config.systemPrompt},
         ..._messages,
-        {'role': 'user', 'content': message},
       ],
       'temperature': config.temperature,
       'top_p': config.topP,

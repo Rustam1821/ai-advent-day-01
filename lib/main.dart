@@ -1,6 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'agent.dart';
+import 'history_storage.dart';
 
 void main() => runApp(const MyApp());
 
@@ -8,7 +12,7 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'AI Advent — Day 6',
+    title: 'AI Advent — Day 7',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4154B3)),
@@ -26,14 +30,34 @@ class AgentPage extends StatefulWidget {
 }
 
 class _AgentPageState extends State<AgentPage> {
-  final _agent = Agent(const AgentConfig());
+  final _agent = Agent(
+    const AgentConfig(),
+    storage: HistoryStorage(() async {
+      final directory = await getApplicationSupportDirectory();
+      return File('${directory.path}/conversation.json');
+    }),
+  );
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _restore();
+  }
+
+  Future<void> _restore() async {
+    await _agent.initialize();
+    if (!mounted) return;
+    setState(() => _loading = false);
+  }
+
   final _input = TextEditingController();
   final _scroll = ScrollController();
   bool _sending = false;
   String? _error;
 
   Future<void> _send() async {
-    if (_sending || _input.text.trim().isEmpty) return;
+    if (_loading || _sending || _input.text.trim().isEmpty) return;
     FocusScope.of(context).unfocus();
     setState(() {
       _sending = true;
@@ -68,7 +92,7 @@ class _AgentPageState extends State<AgentPage> {
   Widget build(BuildContext context) {
     final turns = _agent.turns;
     return Scaffold(
-      appBar: AppBar(title: const Text('Day 6 · Первый агент')),
+      appBar: AppBar(title: const Text('Day 7 · Сохранение контекста')),
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
@@ -77,12 +101,12 @@ class _AgentPageState extends State<AgentPage> {
               children: [
                 const Padding(
                   padding: EdgeInsets.all(16),
-                  child: Text(
-                    'Агент помнит контекст, пока открыт этот диалог.',
-                  ),
+                  child: Text('Агент помнит диалог даже после перезапуска.'),
                 ),
                 Expanded(
-                  child: turns.isEmpty
+                  child: _loading
+                      ? const Center(child: CircularProgressIndicator())
+                      : turns.isEmpty
                       ? const Center(
                           child: Text(
                             'Расскажите что-нибудь, затем задайте вопрос.',
@@ -99,20 +123,27 @@ class _AgentPageState extends State<AgentPage> {
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
                                 _bubble('Вы', turn.userText, true),
-                                _bubble('Агент', result.content!, false),
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 16),
-                                  child: Text(
-                                    'Время: ${((result.elapsed?.inMilliseconds ?? 0) / 1000).toStringAsFixed(2)} с'
-                                    ' · Токены: ${result.input ?? '—'} → ${result.output ?? '—'}'
-                                    ' · Всего: ${result.total ?? '—'}'
-                                    '\nСтоимость: ${result.cost == null ? '—' : '\$${result.cost!.toStringAsFixed(6)} USD (расчёт)'}',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall,
+                                if (result != null)
+                                  _bubble('Агент', result.content!, false),
+                                if (result == null && !_sending)
+                                  const Text(
+                                    'Ответ не получен. Можно повторить сообщение.',
                                   ),
-                                ),
-                                if (result.finishReason != 'stop')
+                                if (result?.elapsed != null)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 16),
+                                    child: Text(
+                                      'Время: ${((result!.elapsed?.inMilliseconds ?? 0) / 1000).toStringAsFixed(2)} с'
+                                      ' · Токены: ${result.input ?? '—'} → ${result.output ?? '—'}'
+                                      ' · Всего: ${result.total ?? '—'}'
+                                      '\nСтоимость: ${result.cost == null ? '—' : '\$${result.cost!.toStringAsFixed(6)} USD (расчёт)'}',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall,
+                                    ),
+                                  ),
+                                if (result?.finishReason != null &&
+                                    result!.finishReason != 'stop')
                                   const Text('Ответ может быть неполным.'),
                               ],
                             );
@@ -120,11 +151,11 @@ class _AgentPageState extends State<AgentPage> {
                         ),
                 ),
                 if (_sending) const LinearProgressIndicator(),
-                if (_error != null)
+                if (_error != null || _agent.storageWarning != null)
                   Padding(
                     padding: const EdgeInsets.all(12),
                     child: Text(
-                      _error!,
+                      _error ?? _agent.storageWarning!,
                       style: TextStyle(
                         color: Theme.of(context).colorScheme.error,
                       ),
@@ -138,7 +169,7 @@ class _AgentPageState extends State<AgentPage> {
                       Expanded(
                         child: TextField(
                           controller: _input,
-                          enabled: !_sending,
+                          enabled: !_loading && !_sending,
                           minLines: 1,
                           maxLines: 4,
                           decoration: const InputDecoration(
@@ -149,7 +180,7 @@ class _AgentPageState extends State<AgentPage> {
                       ),
                       const SizedBox(width: 8),
                       FilledButton(
-                        onPressed: _sending ? null : _send,
+                        onPressed: _loading || _sending ? null : _send,
                         child: Text(_sending ? 'Ждём…' : 'Отправить'),
                       ),
                     ],
