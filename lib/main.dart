@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -12,7 +13,7 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'AI Advent — Day 7',
+    title: 'AI Advent — Day 8',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4154B3)),
@@ -56,6 +57,23 @@ class _AgentPageState extends State<AgentPage> {
   bool _sending = false;
   String? _error;
 
+  Future<void> _action(String action) async {
+    if (_loading || _sending) return;
+    setState(() {
+      _sending = true;
+      _error = null;
+    });
+    final error = action == 'clear'
+        ? await _agent.clearConversation()
+        : await _agent.prepareDemoHistory(overflow: action == 'overflow');
+    if (!mounted) return;
+    setState(() {
+      _sending = false;
+      _error = error;
+      if (error == null && action == 'clear') _input.clear();
+    });
+  }
+
   Future<void> _send() async {
     if (_loading || _sending || _input.text.trim().isEmpty) return;
     FocusScope.of(context).unfocus();
@@ -92,7 +110,32 @@ class _AgentPageState extends State<AgentPage> {
   Widget build(BuildContext context) {
     final turns = _agent.turns;
     return Scaffold(
-      appBar: AppBar(title: const Text('Day 7 · Сохранение контекста')),
+      appBar: AppBar(
+        title: const Text('Day 8 · Токены'),
+        actions: [
+          IconButton(
+            tooltip: 'Очистить диалог',
+            onPressed: _loading || _sending ? null : () => _action('clear'),
+            icon: const Icon(Icons.delete_outline),
+          ),
+          if (kDebugMode)
+            PopupMenuButton<String>(
+              tooltip: 'Day 8 demo',
+              enabled: !_loading && !_sending,
+              onSelected: _action,
+              itemBuilder: (_) => const [
+                PopupMenuItem(
+                  value: 'long',
+                  child: Text('Demo: + длинная история'),
+                ),
+                PopupMenuItem(
+                  value: 'overflow',
+                  child: Text('Demo: + overflow (1M+)'),
+                ),
+              ],
+            ),
+        ],
+      ),
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
@@ -101,7 +144,10 @@ class _AgentPageState extends State<AgentPage> {
               children: [
                 const Padding(
                   padding: EdgeInsets.all(16),
-                  child: Text('Агент помнит диалог даже после перезапуска.'),
+                  child: Text(
+                    'Context = system + вся история + новое сообщение.\n'
+                    'DeepSeek Flash · окно 1M · история сохраняется.',
+                  ),
                 ),
                 Expanded(
                   child: _loading
@@ -123,25 +169,13 @@ class _AgentPageState extends State<AgentPage> {
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
                                 _bubble('Вы', turn.userText, true),
-                                if (result != null)
-                                  _bubble('Агент', result.content!, false),
+                                if (result?.content != null)
+                                  _bubble('Агент', result!.content!, false),
                                 if (result == null && !_sending)
                                   const Text(
-                                    'Ответ не получен. Можно повторить сообщение.',
+                                    'Нет ответа (локальные demo-данные или незавершённая отправка).',
                                   ),
-                                if (result?.elapsed != null)
-                                  Padding(
-                                    padding: const EdgeInsets.only(bottom: 16),
-                                    child: Text(
-                                      'Время: ${((result!.elapsed?.inMilliseconds ?? 0) / 1000).toStringAsFixed(2)} с'
-                                      ' · Токены: ${result.input ?? '—'} → ${result.output ?? '—'}'
-                                      ' · Всего: ${result.total ?? '—'}'
-                                      '\nСтоимость: ${result.cost == null ? '—' : '\$${result.cost!.toStringAsFixed(6)} USD (расчёт)'}',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall,
-                                    ),
-                                  ),
+                                if (result?.elapsed != null) _metrics(turn),
                                 if (result?.finishReason != null &&
                                     result!.finishReason != 'stop')
                                   const Text('Ответ может быть неполным.'),
@@ -194,6 +228,32 @@ class _AgentPageState extends State<AgentPage> {
     );
   }
 
+  Widget _metrics(AgentTurn turn) {
+    final result = turn.result!;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Current message ≈ ${turn.estimatedMessageTokens} tokens (оценка)',
+            ),
+            Text('Context: ${result.input ?? '—'} tokens (API)'),
+            Text('Response: ${result.output ?? '—'} tokens (API)'),
+            Text('Total call: ${result.total ?? '—'} tokens (API)'),
+            if (result.input == null)
+              const Text('API не вернул usage. История не обрезана.'),
+            Text(
+              'Время: ${(result.elapsed!.inMilliseconds / 1000).toStringAsFixed(2)} с',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _bubble(String title, String text, bool user) => Card(
     color: user ? Theme.of(context).colorScheme.primaryContainer : null,
     child: Padding(
@@ -203,7 +263,14 @@ class _AgentPageState extends State<AgentPage> {
         children: [
           Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
           const SizedBox(height: 4),
-          SelectableText(text),
+          SelectableText(
+            text.length > 600 ? '${text.substring(0, 600)}…' : text,
+          ),
+          if (text.length > 600)
+            const Text(
+              'Показан фрагмент. В истории и API — полный текст.',
+              style: TextStyle(fontStyle: FontStyle.italic),
+            ),
         ],
       ),
     ),

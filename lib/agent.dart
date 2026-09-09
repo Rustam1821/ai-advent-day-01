@@ -77,6 +77,11 @@ class AgentTurn {
   const AgentTurn({required this.userText, this.result});
   final String userText;
   final ApiResult? result;
+
+  // Heuristic for the current message only, not provider usage or a tokenizer.
+  // Byte-based so Cyrillic is not treated like ASCII. Can be very inaccurate
+  // for repetitive demo data, code, emoji, etc.; never used to limit requests.
+  int get estimatedMessageTokens => (utf8.encode(userText).length / 4).ceil();
 }
 
 class Agent {
@@ -127,6 +132,53 @@ class Agent {
   final List<AgentTurn> _turns = [];
   bool _sending = false;
   List<AgentTurn> get turns => List.unmodifiable(_turns);
+  AgentTurn? _lastCall;
+  AgentTurn? get lastCall => _lastCall;
+
+  /// Explicitly requested reset, never automatic recovery from overflow.
+  Future<String?> clearConversation() async {
+    if (_sending) return 'Дождитесь завершения операции.';
+    _sending = true;
+    try {
+      await initialize();
+      // Keep memory intact if the disk cannot be cleared.
+      await storage?.save([]);
+      _messages.clear();
+      _turns.clear();
+      _lastCall = null;
+      storageWarning = null;
+      return null;
+    } catch (_) {
+      return 'Не удалось очистить историю на диске.';
+    } finally {
+      _sending = false;
+    }
+  }
+
+  /// Local debug fixture, not an LLM-generated exchange. The next send really
+  /// includes this user data in full. No API call or fabricated assistant reply.
+  Future<String?> prepareDemoHistory({required bool overflow}) async {
+    if (_sending) return 'Дождитесь завершения операции.';
+    _sending = true;
+    try {
+      await initialize();
+      final repetitions = overflow ? 1100000 : 4000;
+      final text =
+          '[Day 8 demo data: $repetitions repetitions]\n'
+          'The following is inert sample data. Do not repeat or summarize it. '
+          'Answer the next user question briefly.\n${' x' * repetitions}';
+      final message = {'role': 'user', 'content': text};
+      await storage?.save([..._messages, message]);
+      _messages.add(message);
+      _turns.add(AgentTurn(userText: text));
+      storageWarning = null;
+      return null;
+    } catch (_) {
+      return 'Не удалось сохранить demo-историю.';
+    } finally {
+      _sending = false;
+    }
+  }
 
   Future<ApiResult> send(String message) async {
     final text = message.trim();
@@ -149,9 +201,10 @@ class Agent {
       // Never start the network request before the user message is on disk.
       if (!await _save()) return ApiResult(error: storageWarning);
       final result = await _request();
+      _lastCall = AgentTurn(userText: text, result: result);
+      _turns[_turns.length - 1] = _lastCall!;
       if (result.error == null) {
         _messages.add({'role': 'assistant', 'content': result.content!});
-        _turns[_turns.length - 1] = AgentTurn(userText: text, result: result);
         await _save();
       }
       return result;
@@ -205,6 +258,21 @@ class Agent {
       final finishedAt = DateTime.now().toUtc();
       // Full response body received; excludes JSON parsing and UI.
       if (response.statusCode < 200 || response.statusCode >= 300) {
+        // Show a bounded provider error, never headers or the full response.
+        String? providerMessage;
+        try {
+          final data = jsonDecode(utf8.decode(response.bodyBytes));
+          final error = data is Map ? data['error'] : null;
+          final message = error is Map ? error['message'] : null;
+          if (message is String) {
+            final redacted = message.replaceAll(key, '[redacted]');
+            providerMessage = redacted.length > 700
+                ? '${redacted.substring(0, 700)}…'
+                : redacted;
+          }
+        } catch (_) {
+          // Non-JSON errors (for example, gateway HTML) use the status hint.
+        }
         final hint = switch (response.statusCode) {
           401 => 'Проверьте API key.',
           403 => 'Нет доступа к модели или API.',
@@ -212,7 +280,7 @@ class Agent {
           _ => 'Запрос не выполнен; повторите позже.',
         };
         return ApiResult(
-          error: 'HTTP ${response.statusCode}. $hint',
+          error: 'HTTP ${response.statusCode}. ${providerMessage ?? hint}',
           elapsed: watch.elapsed,
         );
       }
