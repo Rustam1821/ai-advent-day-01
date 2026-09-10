@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -13,7 +12,7 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'AI Advent — Day 8',
+    title: 'AI Advent — Day 9',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4154B3)),
@@ -111,29 +110,13 @@ class _AgentPageState extends State<AgentPage> {
     final turns = _agent.turns;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Day 8 · Токены'),
+        title: const Text('Day 9 · Compression'),
         actions: [
           IconButton(
             tooltip: 'Очистить диалог',
             onPressed: _loading || _sending ? null : () => _action('clear'),
             icon: const Icon(Icons.delete_outline),
           ),
-          if (kDebugMode)
-            PopupMenuButton<String>(
-              tooltip: 'Day 8 demo',
-              enabled: !_loading && !_sending,
-              onSelected: _action,
-              itemBuilder: (_) => const [
-                PopupMenuItem(
-                  value: 'long',
-                  child: Text('Demo: + длинная история'),
-                ),
-                PopupMenuItem(
-                  value: 'overflow',
-                  child: Text('Demo: + overflow (1M+)'),
-                ),
-              ],
-            ),
         ],
       ),
       body: SafeArea(
@@ -142,13 +125,23 @@ class _AgentPageState extends State<AgentPage> {
             constraints: const BoxConstraints(maxWidth: 800),
             child: Column(
               children: [
-                const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Text(
-                    'Context = system + вся история + новое сообщение.\n'
-                    'DeepSeek Flash · окно 1M · история сохраняется.',
+                SwitchListTile(
+                  title: Text(
+                    'Compression: ${_agent.compressionEnabled ? "ON" : "OFF"}',
                   ),
+                  subtitle: const Text(
+                    'Последние 4 сообщения + summary; порог 8',
+                  ),
+                  value: _agent.compressionEnabled,
+                  onChanged: _loading || _sending
+                      ? null
+                      : (value) async {
+                          setState(() => _sending = true);
+                          await _agent.setCompression(value);
+                          if (mounted) setState(() => _sending = false);
+                        },
                 ),
+                _compressionInfo(),
                 Expanded(
                   child: _loading
                       ? const Center(child: CircularProgressIndicator())
@@ -185,11 +178,15 @@ class _AgentPageState extends State<AgentPage> {
                         ),
                 ),
                 if (_sending) const LinearProgressIndicator(),
-                if (_error != null || _agent.storageWarning != null)
+                if (_error != null ||
+                    _agent.storageWarning != null ||
+                    _agent.compressionWarning != null)
                   Padding(
                     padding: const EdgeInsets.all(12),
                     child: Text(
-                      _error ?? _agent.storageWarning!,
+                      _error ??
+                          _agent.storageWarning ??
+                          _agent.compressionWarning!,
                       style: TextStyle(
                         color: Theme.of(context).colorScheme.error,
                       ),
@@ -225,6 +222,64 @@ class _AgentPageState extends State<AgentPage> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _compressionInfo() {
+    final chat = _agent.chatUsage;
+    final summary = _agent.summaryUsage;
+    return ExpansionTile(
+      title: Text(
+        'Контекст API: ${_agent.lastCall?.result?.input ?? "—"} токенов '
+        '· сжатий ${_agent.compressionCount}',
+      ),
+      subtitle: Text(
+        'Chat: ${chat.total} · Summary: ${summary.total} '
+        '· Всего: ${chat.total + summary.total}',
+      ),
+      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      children: [
+        SizedBox(
+          height: 200,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Original: ${_agent.originalMessageCount} · '
+                  'Compressed: ${_agent.compressedMessageCount} · '
+                  'Recent: ${_agent.recentMessageCount}',
+                ),
+                Text(
+                  'Последний context OFF: ${_agent.lastInputOff ?? "—"}; '
+                  'ON: ${_agent.lastInputOn ?? "—"} (API, разные запросы)',
+                ),
+                Text('Chat input/output: ${chat.input} / ${chat.output}'),
+                Text(
+                  'Summarization input/output: ${summary.input} / ${summary.output} '
+                  '· вызовов: ${summary.calls}',
+                ),
+                Text(
+                  'Размер summary: ${_agent.summaryTokens ?? "—"} output tokens '
+                  'последнего успешного сжатия',
+                ),
+                Text(
+                  'API-сообщений в последнем chat request: ${_agent.lastSentMessages.length}',
+                ),
+                if (chat.unknown + summary.unknown > 0)
+                  Text(
+                    'Usage неизвестен для ${chat.unknown + summary.unknown} вызовов; '
+                    'итог неполный.',
+                  ),
+                const SizedBox(height: 8),
+                SelectableText(
+                  _agent.summary.isEmpty ? 'Summary пока нет.' : _agent.summary,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -268,7 +323,7 @@ class _AgentPageState extends State<AgentPage> {
           ),
           if (text.length > 600)
             const Text(
-              'Показан фрагмент. В истории и API — полный текст.',
+              'Показан фрагмент. В истории — полный текст; старый контекст может быть в summary.',
               style: TextStyle(fontStyle: FontStyle.italic),
             ),
         ],
