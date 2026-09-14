@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
@@ -12,7 +13,7 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'AI Advent — Day 9',
+    title: 'AI Advent — Day 10',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4154B3)),
@@ -30,13 +31,25 @@ class AgentPage extends StatefulWidget {
 }
 
 class _AgentPageState extends State<AgentPage> {
-  final _agent = Agent(
-    const AgentConfig(),
-    storage: HistoryStorage(() async {
-      final directory = await getApplicationSupportDirectory();
-      return File('${directory.path}/conversation.json');
-    }),
-  );
+  static const _strategies = <ContextStrategy>[
+    SlidingWindow(),
+    StickyFacts(),
+    Branching(),
+  ];
+  static HistoryStorage _storage(String name) => HistoryStorage(() async {
+    final directory = await getApplicationSupportDirectory();
+    return File('${directory.path}/$name.json');
+  });
+  final _agents = [
+    for (final strategy in _strategies)
+      Agent(
+        AgentConfig(strategy: strategy),
+        storage: _storage('day10-${strategy.id}'),
+      ),
+  ];
+  final _selection = _storage('day10-selection');
+  int _selected = 0;
+  Agent get _agent => _agents[_selected];
   bool _loading = true;
 
   @override
@@ -46,7 +59,14 @@ class _AgentPageState extends State<AgentPage> {
   }
 
   Future<void> _restore() async {
-    await _agent.initialize();
+    await Future.wait(_agents.map((agent) => agent.initialize()));
+    try {
+      final state = await _selection.loadState();
+      final selected = state['selected'] as int? ?? 0;
+      if (selected >= 0 && selected < _agents.length) _selected = selected;
+    } catch (_) {
+      /* A missing/invalid preference keeps Sliding selected. */
+    }
     if (!mounted) return;
     setState(() => _loading = false);
   }
@@ -62,14 +82,16 @@ class _AgentPageState extends State<AgentPage> {
       _sending = true;
       _error = null;
     });
-    final error = action == 'clear'
-        ? await _agent.clearConversation()
-        : await _agent.prepareDemoHistory(overflow: action == 'overflow');
+    final error = switch (action) {
+      'clear' => await _agent.clearConversation(),
+      'checkpoint' => await _agent.createCheckpoint(),
+      _ => await _agent.switchBranch(action),
+    };
     if (!mounted) return;
     setState(() {
       _sending = false;
       _error = error;
-      if (error == null && action == 'clear') _input.clear();
+      if (error == null) _input.clear();
     });
   }
 
@@ -110,7 +132,7 @@ class _AgentPageState extends State<AgentPage> {
     final turns = _agent.turns;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Day 9 · Compression'),
+        title: const Text('Day 10 · Context strategies'),
         actions: [
           IconButton(
             tooltip: 'Очистить диалог',
@@ -125,23 +147,80 @@ class _AgentPageState extends State<AgentPage> {
             constraints: const BoxConstraints(maxWidth: 800),
             child: Column(
               children: [
-                SwitchListTile(
-                  title: Text(
-                    'Compression: ${_agent.compressionEnabled ? "ON" : "OFF"}',
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                  child: DropdownButton<int>(
+                    value: _selected,
+                    isExpanded: true,
+                    items: [
+                      for (var i = 0; i < _strategies.length; i++)
+                        DropdownMenuItem(
+                          value: i,
+                          child: Text(_strategies[i].label),
+                        ),
+                    ],
+                    onChanged: _loading || _sending
+                        ? null
+                        : (value) async {
+                            if (value == null) return;
+                            setState(() => _sending = true);
+                            try {
+                              await _selection.saveState({
+                                'messages': [],
+                                'selected': value,
+                              });
+                              if (!mounted) return;
+                              setState(() {
+                                _selected = value;
+                                _input.clear();
+                                _error = null;
+                              });
+                            } catch (_) {
+                              if (mounted) {
+                                setState(
+                                  () => _error =
+                                      'Не удалось сохранить выбор стратегии.',
+                                );
+                              }
+                            } finally {
+                              if (mounted) setState(() => _sending = false);
+                            }
+                          },
                   ),
-                  subtitle: const Text(
-                    'Последние 4 сообщения + summary; порог 8',
-                  ),
-                  value: _agent.compressionEnabled,
-                  onChanged: _loading || _sending
-                      ? null
-                      : (value) async {
-                          setState(() => _sending = true);
-                          await _agent.setCompression(value);
-                          if (mounted) setState(() => _sending = false);
-                        },
                 ),
-                _compressionInfo(),
+                if (_agent.config.strategy is Branching)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Row(
+                      children: [
+                        if (!_agent.hasCheckpoint)
+                          OutlinedButton(
+                            onPressed: _loading || _sending
+                                ? null
+                                : () => _action('checkpoint'),
+                            child: const Text('Create checkpoint'),
+                          )
+                        else ...[
+                          Text(
+                            'Checkpoint: ${_agent.checkpointMessageCount} сообщений',
+                          ),
+                          const Spacer(),
+                          for (final name in _agent.branchNames)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 6),
+                              child: ChoiceChip(
+                                label: Text(name),
+                                selected: _agent.activeBranch == name,
+                                onSelected: _sending
+                                    ? null
+                                    : (_) => _action(name),
+                              ),
+                            ),
+                        ],
+                      ],
+                    ),
+                  ),
+                _strategyInfo(),
                 Expanded(
                   child: _loading
                       ? const Center(child: CircularProgressIndicator())
@@ -178,15 +257,11 @@ class _AgentPageState extends State<AgentPage> {
                         ),
                 ),
                 if (_sending) const LinearProgressIndicator(),
-                if (_error != null ||
-                    _agent.storageWarning != null ||
-                    _agent.compressionWarning != null)
+                if (_error != null || _agent.storageWarning != null)
                   Padding(
                     padding: const EdgeInsets.all(12),
                     child: Text(
-                      _error ??
-                          _agent.storageWarning ??
-                          _agent.compressionWarning!,
+                      _error ?? _agent.storageWarning!,
                       style: TextStyle(
                         color: Theme.of(context).colorScheme.error,
                       ),
@@ -225,56 +300,53 @@ class _AgentPageState extends State<AgentPage> {
     );
   }
 
-  Widget _compressionInfo() {
+  Widget _strategyInfo() {
     final chat = _agent.chatUsage;
-    final summary = _agent.summaryUsage;
+    final service = _agent.extractionUsage;
+    final strategy = _agent.config.strategy!;
     return ExpansionTile(
+      key: ValueKey(strategy.id),
       title: Text(
-        'Контекст API: ${_agent.lastCall?.result?.input ?? "—"} токенов '
-        '· сжатий ${_agent.compressionCount}',
+        'Context: ${_agent.lastCall?.result?.input ?? "—"} '
+        '· Response: ${_agent.lastCall?.result?.output ?? "—"}',
       ),
       subtitle: Text(
-        'Chat: ${chat.total} · Summary: ${summary.total} '
-        '· Всего: ${chat.total + summary.total}',
+        'Chat: ${chat.total} · Extraction: ${service.total} '
+        '· Всего: ${chat.total + service.total}',
       ),
       childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
       children: [
         SizedBox(
-          height: 200,
+          height: 170,
           child: SingleChildScrollView(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Original: ${_agent.originalMessageCount} · '
-                  'Compressed: ${_agent.compressedMessageCount} · '
-                  'Recent: ${_agent.recentMessageCount}',
+                  strategy is Branching
+                      ? 'Активная ветка: ${_agent.hasCheckpoint ? _agent.activeBranch : "общая история"}. '
+                            'Токены суммарно по всем веткам.'
+                      : 'Window: 6 сообщений, включая новый user.',
                 ),
                 Text(
-                  'Последний context OFF: ${_agent.lastInputOff ?? "—"}; '
-                  'ON: ${_agent.lastInputOn ?? "—"} (API, разные запросы)',
+                  'Видимая история: ${_agent.visibleMessages.length} сообщений; '
+                  'в последнем API context: ${_agent.lastSentMessages.length} (включая system).',
                 ),
                 Text('Chat input/output: ${chat.input} / ${chat.output}'),
-                Text(
-                  'Summarization input/output: ${summary.input} / ${summary.output} '
-                  '· вызовов: ${summary.calls}',
-                ),
-                Text(
-                  'Размер summary: ${_agent.summaryTokens ?? "—"} output tokens '
-                  'последнего успешного сжатия',
-                ),
-                Text(
-                  'API-сообщений в последнем chat request: ${_agent.lastSentMessages.length}',
-                ),
-                if (chat.unknown + summary.unknown > 0)
+                if (strategy is StickyFacts) ...[
                   Text(
-                    'Usage неизвестен для ${chat.unknown + summary.unknown} вызовов; '
-                    'итог неполный.',
+                    'Extraction input/output: ${service.input} / ${service.output} '
+                    '· вызовов: ${service.calls}',
                   ),
-                const SizedBox(height: 8),
-                SelectableText(
-                  _agent.summary.isEmpty ? 'Summary пока нет.' : _agent.summary,
-                ),
+                  const SizedBox(height: 8),
+                  SelectableText(
+                    const JsonEncoder.withIndent('  ').convert(_agent.facts),
+                  ),
+                ],
+                if (chat.unknown + service.unknown > 0)
+                  Text(
+                    'Usage неизвестен для ${chat.unknown + service.unknown} вызовов; сумма неполная.',
+                  ),
               ],
             ),
           ),
@@ -297,8 +369,7 @@ class _AgentPageState extends State<AgentPage> {
             Text('Context: ${result.input ?? '—'} tokens (API)'),
             Text('Response: ${result.output ?? '—'} tokens (API)'),
             Text('Total call: ${result.total ?? '—'} tokens (API)'),
-            if (result.input == null)
-              const Text('API не вернул usage. История не обрезана.'),
+            if (result.input == null) const Text('API не вернул usage.'),
             Text(
               'Время: ${(result.elapsed!.inMilliseconds / 1000).toStringAsFixed(2)} с',
               style: Theme.of(context).textTheme.bodySmall,
@@ -318,14 +389,7 @@ class _AgentPageState extends State<AgentPage> {
         children: [
           Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
           const SizedBox(height: 4),
-          SelectableText(
-            text.length > 600 ? '${text.substring(0, 600)}…' : text,
-          ),
-          if (text.length > 600)
-            const Text(
-              'Показан фрагмент. В истории — полный текст; старый контекст может быть в summary.',
-              style: TextStyle(fontStyle: FontStyle.italic),
-            ),
+          SelectableText(text),
         ],
       ),
     ),
