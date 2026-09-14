@@ -1,11 +1,10 @@
 import 'dart:io';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'agent.dart';
-import 'history_storage.dart';
+import 'json_file_storage.dart';
 
 void main() => runApp(const MyApp());
 
@@ -13,7 +12,7 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'AI Advent — Day 10',
+    title: 'AI Advent — Day 11',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4154B3)),
@@ -31,26 +30,28 @@ class AgentPage extends StatefulWidget {
 }
 
 class _AgentPageState extends State<AgentPage> {
-  static const _strategies = <ContextStrategy>[
-    SlidingWindow(),
-    StickyFacts(),
-    Branching(),
-  ];
-  static HistoryStorage _storage(String name) => HistoryStorage(() async {
+  static JsonFileStorage _storage(String name) => JsonFileStorage(() async {
     final directory = await getApplicationSupportDirectory();
     return File('${directory.path}/$name.json');
   });
-  final _agents = [
-    for (final strategy in _strategies)
-      Agent(
-        AgentConfig(strategy: strategy),
-        storage: _storage('day10-${strategy.id}'),
-      ),
-  ];
-  final _selection = _storage('day10-selection');
-  int _selected = 0;
-  Agent get _agent => _agents[_selected];
-  bool _loading = true;
+  final _agent = Agent(
+    const AgentConfig(
+      strategy: SlidingWindow(),
+      systemPrompt:
+          'Ты полезный помощник. Отвечай кратко, по-русски. '
+          'Используй только переданные сведения о пользователе и задаче. '
+          'Не угадывай отсутствующие факты: пиши «неизвестно».',
+    ),
+    memory: AgentMemory(
+      working: WorkingMemory(_storage('day11-working')),
+      longTerm: LongTermMemory(_storage('day11-long-term')),
+    ),
+  );
+  final _input = TextEditingController();
+  final _scroll = ScrollController();
+  bool _loading = true, _busy = false;
+  String? _error;
+  bool get _disabled => _loading || _busy;
 
   @override
   void initState() {
@@ -59,53 +60,46 @@ class _AgentPageState extends State<AgentPage> {
   }
 
   Future<void> _restore() async {
-    await Future.wait(_agents.map((agent) => agent.initialize()));
-    try {
-      final state = await _selection.loadState();
-      final selected = state['selected'] as int? ?? 0;
-      if (selected >= 0 && selected < _agents.length) _selected = selected;
-    } catch (_) {
-      /* A missing/invalid preference keeps Sliding selected. */
-    }
-    if (!mounted) return;
-    setState(() => _loading = false);
+    await _agent.initialize();
+    if (mounted) setState(() => _loading = false);
   }
 
-  final _input = TextEditingController();
-  final _scroll = ScrollController();
-  bool _sending = false;
-  String? _error;
-
-  Future<void> _action(String action) async {
-    if (_loading || _sending) return;
+  Future<void> _action(Future<String?> Function() action) async {
+    if (_disabled) return;
     setState(() {
-      _sending = true;
+      _busy = true;
       _error = null;
     });
-    final error = switch (action) {
-      'clear' => await _agent.clearConversation(),
-      'checkpoint' => await _agent.createCheckpoint(),
-      _ => await _agent.switchBranch(action),
-    };
-    if (!mounted) return;
-    setState(() {
-      _sending = false;
-      _error = error;
-      if (error == null) _input.clear();
-    });
+    final error = await action();
+    if (mounted)
+      setState(() {
+        _busy = false;
+        _error = error;
+      });
+  }
+
+  Future<void> _saveFact() async {
+    final fact = await showDialog<_Fact>(
+      context: context,
+      builder: (_) => const _MemoryEditor(),
+    );
+    if (!mounted || fact == null) return;
+    await _action(
+      () => _agent.saveMemory(fact.layer, key: fact.key, value: fact.value),
+    );
   }
 
   Future<void> _send() async {
-    if (_loading || _sending || _input.text.trim().isEmpty) return;
+    if (_disabled || _input.text.trim().isEmpty) return;
     FocusScope.of(context).unfocus();
     setState(() {
-      _sending = true;
+      _busy = true;
       _error = null;
     });
     final result = await _agent.send(_input.text);
     if (!mounted) return;
     setState(() {
-      _sending = false;
+      _busy = false;
       _error = result.error;
       if (result.error == null) _input.clear();
     });
@@ -128,18 +122,17 @@ class _AgentPageState extends State<AgentPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    final turns = _agent.turns;
-    return Scaffold(
+  Widget build(BuildContext context) => DefaultTabController(
+    length: 2,
+    child: Scaffold(
       appBar: AppBar(
-        title: const Text('Day 10 · Context strategies'),
-        actions: [
-          IconButton(
-            tooltip: 'Очистить диалог',
-            onPressed: _loading || _sending ? null : () => _action('clear'),
-            icon: const Icon(Icons.delete_outline),
-          ),
-        ],
+        title: const Text('Day 11 · Память агента'),
+        bottom: const TabBar(
+          tabs: [
+            Tab(text: 'Память'),
+            Tab(text: 'Чат'),
+          ],
+        ),
       ),
       body: SafeArea(
         child: Center(
@@ -147,251 +140,300 @@ class _AgentPageState extends State<AgentPage> {
             constraints: const BoxConstraints(maxWidth: 800),
             child: Column(
               children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-                  child: DropdownButton<int>(
-                    value: _selected,
-                    isExpanded: true,
-                    items: [
-                      for (var i = 0; i < _strategies.length; i++)
-                        DropdownMenuItem(
-                          value: i,
-                          child: Text(_strategies[i].label),
-                        ),
-                    ],
-                    onChanged: _loading || _sending
-                        ? null
-                        : (value) async {
-                            if (value == null) return;
-                            setState(() => _sending = true);
-                            try {
-                              await _selection.saveState({
-                                'messages': [],
-                                'selected': value,
-                              });
-                              if (!mounted) return;
-                              setState(() {
-                                _selected = value;
-                                _input.clear();
-                                _error = null;
-                              });
-                            } catch (_) {
-                              if (mounted) {
-                                setState(
-                                  () => _error =
-                                      'Не удалось сохранить выбор стратегии.',
-                                );
-                              }
-                            } finally {
-                              if (mounted) setState(() => _sending = false);
-                            }
-                          },
-                  ),
-                ),
-                if (_agent.config.strategy is Branching)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: Row(
-                      children: [
-                        if (!_agent.hasCheckpoint)
-                          OutlinedButton(
-                            onPressed: _loading || _sending
-                                ? null
-                                : () => _action('checkpoint'),
-                            child: const Text('Create checkpoint'),
-                          )
-                        else ...[
-                          Text(
-                            'Checkpoint: ${_agent.checkpointMessageCount} сообщений',
-                          ),
-                          const Spacer(),
-                          for (final name in _agent.branchNames)
-                            Padding(
-                              padding: const EdgeInsets.only(left: 6),
-                              child: ChoiceChip(
-                                label: Text(name),
-                                selected: _agent.activeBranch == name,
-                                onSelected: _sending
-                                    ? null
-                                    : (_) => _action(name),
-                              ),
-                            ),
-                        ],
-                      ],
-                    ),
-                  ),
-                _strategyInfo(),
-                Expanded(
-                  child: _loading
-                      ? const Center(child: CircularProgressIndicator())
-                      : turns.isEmpty
-                      ? const Center(
-                          child: Text(
-                            'Расскажите что-нибудь, затем задайте вопрос.',
-                          ),
-                        )
-                      : ListView.builder(
-                          controller: _scroll,
-                          padding: const EdgeInsets.symmetric(horizontal: 16),
-                          itemCount: turns.length,
-                          itemBuilder: (context, index) {
-                            final turn = turns[index];
-                            final result = turn.result;
-                            return Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                _bubble('Вы', turn.userText, true),
-                                if (result?.content != null)
-                                  _bubble('Агент', result!.content!, false),
-                                if (result == null && !_sending)
-                                  const Text(
-                                    'Нет ответа (локальные demo-данные или незавершённая отправка).',
-                                  ),
-                                if (result?.elapsed != null) _metrics(turn),
-                                if (result?.finishReason != null &&
-                                    result!.finishReason != 'stop')
-                                  const Text('Ответ может быть неполным.'),
-                              ],
-                            );
-                          },
-                        ),
-                ),
-                if (_sending) const LinearProgressIndicator(),
-                if (_error != null || _agent.storageWarning != null)
+                if (_busy) const LinearProgressIndicator(),
+                if (_error != null || _agent.memory!.warning != null)
                   Padding(
                     padding: const EdgeInsets.all(12),
                     child: Text(
-                      _error ?? _agent.storageWarning!,
+                      _error ?? _agent.memory!.warning!,
                       style: TextStyle(
                         color: Theme.of(context).colorScheme.error,
                       ),
                     ),
                   ),
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _input,
-                          enabled: !_loading && !_sending,
-                          minLines: 1,
-                          maxLines: 4,
-                          decoration: const InputDecoration(
-                            labelText: 'Сообщение',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      FilledButton(
-                        onPressed: _loading || _sending ? null : _send,
-                        child: Text(_sending ? 'Ждём…' : 'Отправить'),
-                      ),
-                    ],
-                  ),
+                Expanded(
+                  child: _loading
+                      ? const Center(child: CircularProgressIndicator())
+                      : TabBarView(children: [_memoryView(), _chatView()]),
                 ),
               ],
             ),
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
 
-  Widget _strategyInfo() {
-    final chat = _agent.chatUsage;
-    final service = _agent.extractionUsage;
-    final strategy = _agent.config.strategy!;
-    return ExpansionTile(
-      key: ValueKey(strategy.id),
-      title: Text(
-        'Context: ${_agent.lastCall?.result?.input ?? "—"} '
-        '· Response: ${_agent.lastCall?.result?.output ?? "—"}',
-      ),
-      subtitle: Text(
-        'Chat: ${chat.total} · Extraction: ${service.total} '
-        '· Всего: ${chat.total + service.total}',
-      ),
-      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+  Widget _memoryView() {
+    final memory = _agent.memory!;
+    return ListView(
+      padding: const EdgeInsets.all(12),
       children: [
-        SizedBox(
-          height: 170,
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  strategy is Branching
-                      ? 'Активная ветка: ${_agent.hasCheckpoint ? _agent.activeBranch : "общая история"}. '
-                            'Токены суммарно по всем веткам.'
-                      : 'Window: 6 сообщений, включая новый user.',
-                ),
-                Text(
-                  'Видимая история: ${_agent.visibleMessages.length} сообщений; '
-                  'в последнем API context: ${_agent.lastSentMessages.length} (включая system).',
-                ),
-                Text('Chat input/output: ${chat.input} / ${chat.output}'),
-                if (strategy is StickyFacts) ...[
-                  Text(
-                    'Extraction input/output: ${service.input} / ${service.output} '
-                    '· вызовов: ${service.calls}',
-                  ),
-                  const SizedBox(height: 8),
-                  SelectableText(
-                    const JsonEncoder.withIndent('  ').convert(_agent.facts),
-                  ),
-                ],
-                if (chat.unknown + service.unknown > 0)
-                  Text(
-                    'Usage неизвестен для ${chat.unknown + service.unknown} вызовов; сумма неполная.',
-                  ),
-              ],
-            ),
-          ),
+        const Text(
+          'Факты записываются только в выбранный слой.\nСообщения чата → Short-Term.',
+        ),
+        const SizedBox(height: 8),
+        _memoryCard(
+          'SHORT-TERM',
+          'Сессия · последние ${memory.shortTerm.windowSize} сообщений',
+          MemoryLayer.shortTerm,
+          memory.shortTerm.messages
+              .map((m) => '${m['role']}: ${m['content']}')
+              .toList(),
+        ),
+        _memoryCard(
+          'WORKING',
+          'Текущая задача · сохраняется при restart',
+          MemoryLayer.working,
+          memory.working.values.entries
+              .map((e) => '${e.key} = ${e.value}')
+              .toList(),
+        ),
+        _memoryCard(
+          'LONG-TERM',
+          'Профиль и предпочтения · между задачами',
+          MemoryLayer.longTerm,
+          memory.longTerm.values.entries
+              .map((e) => '${e.key} = ${e.value}')
+              .toList(),
+        ),
+        const SizedBox(height: 8),
+        FilledButton.icon(
+          onPressed: _disabled ? null : _saveFact,
+          icon: const Icon(Icons.add),
+          label: const Text('Сохранить факт…'),
+        ),
+        OutlinedButton(
+          onPressed: _disabled ? null : () => _action(_agent.resetTask),
+          child: const Text('Новая задача: сбросить Short + Working'),
+        ),
+        const Text(
+          'Корзина у слоя очищает только его. Новая задача также начинает новую сессию, чтобы старые ответы не возвращали прежние факты.',
         ),
       ],
     );
   }
 
-  Widget _metrics(AgentTurn turn) {
-    final result = turn.result!;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Current message ≈ ${turn.estimatedMessageTokens} tokens (оценка)',
+  Widget _memoryCard(
+    String title,
+    String lifetime,
+    MemoryLayer layer,
+    List<String> values,
+  ) => Card(
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 4, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Clear $title',
+                icon: const Icon(Icons.delete_outline),
+                onPressed: _disabled
+                    ? null
+                    : () => _action(() => _agent.clearMemory(layer)),
+              ),
+            ],
+          ),
+          Text(lifetime, style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 6),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 130),
+            child: SingleChildScrollView(
+              child: SelectableText(
+                values.isEmpty ? 'Пусто' : values.join('\n'),
+              ),
             ),
-            Text('Context: ${result.input ?? '—'} tokens (API)'),
-            Text('Response: ${result.output ?? '—'} tokens (API)'),
-            Text('Total call: ${result.total ?? '—'} tokens (API)'),
-            if (result.input == null) const Text('API не вернул usage.'),
-            Text(
-              'Время: ${(result.elapsed!.inMilliseconds / 1000).toStringAsFixed(2)} с',
-              style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
+    ),
+  );
+
+  Widget _chatView() => Column(
+    children: [
+      Padding(
+        padding: const EdgeInsets.all(12),
+        child: Text(
+          'Context: ${_agent.lastCall?.result?.input ?? '—'} · '
+          'Response: ${_agent.lastCall?.result?.output ?? '—'} (API)\n'
+          'Всего за сессию: ${_agent.chatUsage.total} tokens'
+          '${_agent.chatUsage.unknown > 0 ? ' · есть вызовы без usage' : ''}',
+        ),
+      ),
+      Expanded(
+        child: _agent.visibleMessages.isEmpty
+            ? const Center(
+                child: Text(
+                  'Новая сессия. Working и Long-Term доступны агенту.',
+                ),
+              )
+            : ListView(
+                controller: _scroll,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                children: [
+                  for (final message in _agent.visibleMessages)
+                    Card(
+                      color: message['role'] == 'user'
+                          ? Theme.of(context).colorScheme.primaryContainer
+                          : null,
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              message['role'] == 'user' ? 'Вы' : 'Агент',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            SelectableText(message['content']!),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+      ),
+      if (_agent.lastCall != null)
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Text(
+            'Current message ≈ ${_agent.lastCall!.estimatedMessageTokens} (оценка) · '
+            'Total call: ${_agent.lastCall!.result?.total ?? '—'} (API)',
+          ),
+        ),
+      Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _input,
+                enabled: !_disabled,
+                minLines: 1,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  labelText: 'Сообщение → Short-Term',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            FilledButton(
+              onPressed: _disabled ? null : _send,
+              child: const Text('Отправить'),
             ),
           ],
         ),
       ),
-    );
+    ],
+  );
+}
+
+class _Fact {
+  const _Fact(this.layer, this.key, this.value);
+  final MemoryLayer layer;
+  final String key, value;
+}
+
+class _MemoryEditor extends StatefulWidget {
+  const _MemoryEditor();
+  @override
+  State<_MemoryEditor> createState() => _MemoryEditorState();
+}
+
+class _MemoryEditorState extends State<_MemoryEditor> {
+  MemoryLayer _layer = MemoryLayer.shortTerm;
+  final _key = TextEditingController();
+  final _value = TextEditingController();
+  String? _error;
+  @override
+  void dispose() {
+    _key.dispose();
+    _value.dispose();
+    super.dispose();
   }
 
-  Widget _bubble(String title, String text, bool user) => Card(
-    color: user ? Theme.of(context).colorScheme.primaryContainer : null,
-    child: Padding(
-      padding: const EdgeInsets.all(12),
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Сохранить факт'),
+    content: SingleChildScrollView(
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 4),
-          SelectableText(text),
+          DropdownButton<MemoryLayer>(
+            value: _layer,
+            isExpanded: true,
+            items: const [
+              DropdownMenuItem(
+                value: MemoryLayer.shortTerm,
+                child: Text('Short-Term · сессия'),
+              ),
+              DropdownMenuItem(
+                value: MemoryLayer.working,
+                child: Text('Working · задача'),
+              ),
+              DropdownMenuItem(
+                value: MemoryLayer.longTerm,
+                child: Text('Long-Term · постоянно'),
+              ),
+            ],
+            onChanged: (value) {
+              if (value != null)
+                setState(() {
+                  _layer = value;
+                  _error = null;
+                });
+            },
+          ),
+          if (_layer != MemoryLayer.shortTerm)
+            TextField(
+              controller: _key,
+              decoration: const InputDecoration(labelText: 'Ключ'),
+            ),
+          TextField(
+            controller: _value,
+            minLines: 2,
+            maxLines: 4,
+            decoration: const InputDecoration(labelText: 'Значение / факт'),
+          ),
+          if (_layer != MemoryLayer.shortTerm)
+            const Text(
+              'Запись с тем же ключом заменит значение. В чат не добавляется.',
+            ),
+          if (_error != null)
+            Text(
+              _error!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
+            ),
         ],
       ),
     ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Отмена'),
+      ),
+      FilledButton(
+        onPressed: () {
+          if (_value.text.trim().isEmpty ||
+              (_layer != MemoryLayer.shortTerm && _key.text.trim().isEmpty)) {
+            setState(() => _error = 'Заполните поля.');
+            return;
+          }
+          Navigator.pop(context, _Fact(_layer, _key.text, _value.text));
+        },
+        child: const Text('Сохранить'),
+      ),
+    ],
   );
 }

@@ -5,7 +5,9 @@ import 'package:http/http.dart' as http;
 
 import 'history_storage.dart';
 import 'context_strategy.dart';
+import 'agent_memory.dart';
 export 'context_strategy.dart';
+export 'agent_memory.dart';
 
 class ModelSpec {
   const ModelSpec(
@@ -95,10 +97,12 @@ class AgentTurn {
 }
 
 class Agent {
-  Agent(this.config, {String? apiKey, this.storage})
+  Agent(this.config, {String? apiKey, this.storage, this.memory})
     : _apiKey = apiKey ?? const String.fromEnvironment('DEEPSEEK_API_KEY'),
       compressionEnabled =
-          config.strategy == null && config.compressionEnabled {
+          memory == null &&
+          config.strategy == null &&
+          config.compressionEnabled {
     if (config.recentWindowSize < 2 ||
         config.recentWindowSize.isOdd ||
         config.compressionThreshold <= config.recentWindowSize) {
@@ -108,12 +112,17 @@ class Agent {
     }
   }
   final HistoryStorage? storage;
+  final AgentMemory? memory;
   Future<void>? _initialization;
   String? storageWarning;
 
   Future<void> initialize() => _initialization ??= _restore();
 
   Future<void> _restore() async {
+    if (memory != null) {
+      await memory!.initialize();
+      return;
+    }
     try {
       final state = await storage?.loadState() ?? <String, dynamic>{};
       final saved = (state['messages'] as List? ?? [])
@@ -230,13 +239,14 @@ class Agent {
   };
 
   Future<void> setCompression(bool enabled) async {
-    if (_sending || config.strategy != null) return;
+    if (_sending || config.strategy != null || memory != null) return;
     await initialize();
     compressionEnabled = enabled;
     await _save();
   }
 
   List<Map<String, String>> _context() {
+    if (memory != null) return memory!.context(config.systemPrompt);
     if (config.strategy != null) {
       return [
         if (config.systemPrompt.isNotEmpty)
@@ -330,6 +340,7 @@ class Agent {
   int get checkpointMessageCount => _common.length;
   List<String> get branchNames => List.unmodifiable(_branches.keys);
   List<ChatMessage> get visibleMessages =>
+      memory?.shortTerm.messages ??
       _frozenMessages([if (hasCheckpoint) ..._common, ..._messages]);
 
   List<ChatMessage> _frozenMessages(dynamic value) {
@@ -346,7 +357,7 @@ class Agent {
     );
   }
 
-  void _rebuildTurns() {
+  void _rebuildTurns({bool resetDiagnostics = true}) {
     _turns.clear();
     for (final message in visibleMessages) {
       if (message['role'] == 'user') {
@@ -361,8 +372,10 @@ class Agent {
         );
       }
     }
-    _lastCall = null;
-    lastSentMessages = const [];
+    if (resetDiagnostics) {
+      _lastCall = null;
+      lastSentMessages = const [];
+    }
   }
 
   Future<String?> createCheckpoint() async {
@@ -481,6 +494,7 @@ class Agent {
 
   /// Explicitly requested reset, never automatic recovery from overflow.
   Future<String?> clearConversation() async {
+    if (memory != null) return clearMemory(MemoryLayer.shortTerm);
     if (_sending) return 'Дождитесь завершения операции.';
     _sending = true;
     try {
@@ -519,6 +533,7 @@ class Agent {
   /// Local debug fixture, not an LLM-generated exchange. The next send really
   /// includes this user data in full. No API call or fabricated assistant reply.
   Future<String?> prepareDemoHistory({required bool overflow}) async {
+    if (memory != null) return 'Day 11: выберите слой через сохранение факта.';
     if (_sending) return 'Дождитесь завершения операции.';
     _sending = true;
     try {
@@ -553,6 +568,7 @@ class Agent {
     _sending = true;
     try {
       await initialize();
+      if (memory != null) return await _sendWithMemory(text);
       // Retry the last unanswered message without appending it twice.
       final retry =
           _messages.isNotEmpty &&
@@ -594,6 +610,91 @@ class Agent {
     } finally {
       _sending = false;
     }
+  }
+
+  /// Manual routing: W/L writes never become conversational messages and never
+  /// call an LLM classifier. UI supplies data, not a constructed model prompt.
+  Future<String?> saveMemory(
+    MemoryLayer layer, {
+    String key = '',
+    required String value,
+  }) => _memoryAction(() async {
+    final cleanedKey = key.trim();
+    final cleanedValue = value.trim();
+    if (cleanedValue.isEmpty ||
+        (layer != MemoryLayer.shortTerm && cleanedKey.isEmpty)) {
+      return 'Введите значение и ключ для Working / Long-Term.';
+    }
+    switch (layer) {
+      case MemoryLayer.shortTerm:
+        memory!.shortTerm.add('user', cleanedValue);
+        _rebuildTurns();
+      case MemoryLayer.working:
+        await memory!.working.set(cleanedKey, cleanedValue);
+      case MemoryLayer.longTerm:
+        await memory!.longTerm.set(cleanedKey, cleanedValue);
+    }
+    return null;
+  });
+
+  /// Independent layer clear. In particular, clearing Working keeps Short.
+  Future<String?> clearMemory(MemoryLayer layer) => _memoryAction(() async {
+    switch (layer) {
+      case MemoryLayer.shortTerm:
+        _clearSession();
+      case MemoryLayer.working:
+        await memory!.working.clear();
+      case MemoryLayer.longTerm:
+        await memory!.longTerm.clear();
+    }
+    return null;
+  });
+
+  /// Explicit compound boundary: new task + new session. This also removes old
+  /// assistant replies which may have echoed task facts into the conversation.
+  Future<String?> resetTask() => _memoryAction(() async {
+    await memory!.working.clear();
+    _clearSession();
+    return null;
+  });
+
+  void _clearSession() {
+    memory!.shortTerm.clear();
+    _rebuildTurns();
+    chatUsage.clear();
+  }
+
+  Future<String?> _memoryAction(Future<String?> Function() action) async {
+    if (memory == null) return 'Этот Agent не использует слои Day 11.';
+    if (_sending) return 'Дождитесь завершения операции.';
+    _sending = true;
+    try {
+      await initialize();
+      return await action();
+    } catch (_) {
+      return 'Не удалось записать слой памяти. Прежние данные сохранены.';
+    } finally {
+      _sending = false;
+    }
+  }
+
+  Future<ApiResult> _sendWithMemory(String text) async {
+    final short = memory!.shortTerm;
+    final previous = short.messages.lastOrNull;
+    if (previous?['role'] != 'user' || previous?['content'] != text) {
+      short.add('user', text);
+    }
+    _rebuildTurns();
+    lastSentMessages = List.unmodifiable(
+      _context().map((m) => Map<String, String>.unmodifiable(m)),
+    );
+    final result = await _request(messages: lastSentMessages);
+    chatUsage.add(result);
+    if (result.error == null) short.add('assistant', result.content!);
+    _rebuildTurns(resetDiagnostics: false);
+    _lastCall = AgentTurn(userText: text, result: result);
+    if (_turns.isNotEmpty) _turns[_turns.length - 1] = _lastCall!;
+    return result;
   }
 
   Future<ApiResult> _request({

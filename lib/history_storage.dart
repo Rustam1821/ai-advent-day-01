@@ -1,16 +1,17 @@
-import 'dart:convert';
 import 'dart:io';
+
+import 'json_file_storage.dart';
 
 /// Atomic JSON state; accepts the legacy Day 7 message array. No secrets.
 class HistoryStorage {
-  HistoryStorage(this._resolveFile);
+  HistoryStorage(Future<File> Function() resolveFile)
+    : _json = JsonFileStorage(resolveFile);
 
-  final Future<File> Function() _resolveFile;
+  final JsonFileStorage _json;
 
   Future<Map<String, dynamic>> loadState() async {
-    final file = await _resolveFile();
-    if (!await file.exists()) return {};
-    final decoded = jsonDecode(await file.readAsString());
+    final decoded = await _json.read();
+    if (decoded == null) return {};
     final state = decoded is List
         ? <String, dynamic>{'messages': decoded}
         : Map<String, dynamic>.from(decoded as Map);
@@ -39,11 +40,5 @@ class HistoryStorage {
   Future<void> save(List<Map<String, String>> messages) =>
       saveState({'messages': messages});
 
-  Future<void> saveState(Map<String, dynamic> state) async {
-    final file = await _resolveFile();
-    await file.parent.create(recursive: true);
-    final temporary = File('${file.path}.tmp');
-    await temporary.writeAsString(jsonEncode(state), flush: true);
-    await temporary.rename(file.path);
-  }
+  Future<void> saveState(Map<String, dynamic> state) => _json.write(state);
 }
