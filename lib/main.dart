@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'agent.dart';
+import 'agent_profile.dart';
+import 'profile_editor.dart';
 import 'json_file_storage.dart';
 
 void main() => runApp(const MyApp());
@@ -12,7 +14,7 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'AI Advent — Day 11',
+    title: 'AI Advent — Day 12',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4154B3)),
@@ -38,10 +40,11 @@ class _AgentPageState extends State<AgentPage> {
     const AgentConfig(
       strategy: SlidingWindow(),
       systemPrompt:
-          'Ты полезный помощник. Отвечай кратко, по-русски. '
+          'Ты полезный помощник. Отвечай по-русски. '
           'Используй только переданные сведения о пользователе и задаче. '
           'Не угадывай отсутствующие факты: пиши «неизвестно».',
     ),
+    profiles: AgentProfiles(_storage('day12-profiles')),
     memory: AgentMemory(
       working: WorkingMemory(_storage('day11-working')),
       longTerm: LongTermMemory(_storage('day11-long-term')),
@@ -123,12 +126,13 @@ class _AgentPageState extends State<AgentPage> {
 
   @override
   Widget build(BuildContext context) => DefaultTabController(
-    length: 2,
+    length: 3,
     child: Scaffold(
       appBar: AppBar(
-        title: const Text('Day 11 · Память агента'),
+        title: const Text('Day 12 · Профиль агента'),
         bottom: const TabBar(
           tabs: [
+            Tab(text: 'Профиль'),
             Tab(text: 'Память'),
             Tab(text: 'Чат'),
           ],
@@ -141,11 +145,11 @@ class _AgentPageState extends State<AgentPage> {
             child: Column(
               children: [
                 if (_busy) const LinearProgressIndicator(),
-                if (_error != null || _agent.memory!.warning != null)
+                if (_error != null || _agent.profiles!.warning != null || _agent.memory!.warning != null)
                   Padding(
                     padding: const EdgeInsets.all(12),
                     child: Text(
-                      _error ?? _agent.memory!.warning!,
+                      _error ?? _agent.profiles!.warning ?? _agent.memory!.warning!,
                       style: TextStyle(
                         color: Theme.of(context).colorScheme.error,
                       ),
@@ -154,7 +158,7 @@ class _AgentPageState extends State<AgentPage> {
                 Expanded(
                   child: _loading
                       ? const Center(child: CircularProgressIndicator())
-                      : TabBarView(children: [_memoryView(), _chatView()]),
+                      : TabBarView(children: [_profileView(), _memoryView(), _chatView()]),
                 ),
               ],
             ),
@@ -163,6 +167,58 @@ class _AgentPageState extends State<AgentPage> {
       ),
     ),
   );
+
+  Future<void> _editProfile() async {
+    final profile = await showDialog<AgentProfile>(
+      context: context,
+      builder: (_) => ProfileEditor(profile: _agent.profiles!.active),
+    );
+    if (!mounted || profile == null) return;
+    await _action(() => _agent.profiles!.update(profile));
+  }
+
+  Widget _profileView() {
+    final profiles = _agent.profiles!;
+    final active = profiles.active;
+    return ListView(
+      padding: const EdgeInsets.all(12),
+      children: [
+        const Text('Profile — как отвечать. Memory — узнанные факты.\n'
+            'Настройки применяются автоматически к каждому сообщению.'),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+          initialValue: active.id,
+          decoration: const InputDecoration(labelText: 'Активный профиль'),
+          items: [
+            for (final profile in profiles.profiles)
+              DropdownMenuItem(value: profile.id, child: Text(profile.name)),
+          ],
+          onChanged: _disabled ? null : (id) {
+            if (id != null) _action(() => profiles.select(id));
+          },
+          key: ValueKey(active.id),
+        ),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: SelectableText('Активен: ${active.name}\n\n'
+                'Обращение: ${active.userName}\n\n'
+                'Стиль: ${active.style}\n\n'
+                'Формат: ${active.format}\n\n'
+                'Ограничения: ${active.constraints}'),
+          ),
+        ),
+        FilledButton.icon(
+          onPressed: _disabled ? null : _editProfile,
+          icon: const Icon(Icons.edit_outlined),
+          label: const Text('Редактировать профиль'),
+        ),
+        const SizedBox(height: 8),
+        const Text('Оба профиля и активный выбор сохраняются локально. '
+            'Переключение профиля и очистка памяти независимы.'),
+      ],
+    );
+  }
 
   Widget _memoryView() {
     final memory = _agent.memory!;
@@ -191,7 +247,7 @@ class _AgentPageState extends State<AgentPage> {
         ),
         _memoryCard(
           'LONG-TERM',
-          'Профиль и предпочтения · между задачами',
+          'Узнанные факты и предпочтения · между задачами',
           MemoryLayer.longTerm,
           memory.longTerm.values.entries
               .map((e) => '${e.key} = ${e.value}')
@@ -259,6 +315,11 @@ class _AgentPageState extends State<AgentPage> {
 
   Widget _chatView() => Column(
     children: [
+      Padding(
+        padding: const EdgeInsets.all(8),
+        child: Text('Активный профиль: ${_agent.profiles!.active.name}',
+            style: const TextStyle(fontWeight: FontWeight.bold)),
+      ),
       Padding(
         padding: const EdgeInsets.all(12),
         child: Text(

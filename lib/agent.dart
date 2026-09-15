@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'history_storage.dart';
 import 'context_strategy.dart';
 import 'agent_memory.dart';
+import 'agent_profile.dart';
 export 'context_strategy.dart';
 export 'agent_memory.dart';
 
@@ -97,7 +98,7 @@ class AgentTurn {
 }
 
 class Agent {
-  Agent(this.config, {String? apiKey, this.storage, this.memory})
+  Agent(this.config, {String? apiKey, this.storage, this.memory, this.profiles})
     : _apiKey = apiKey ?? const String.fromEnvironment('DEEPSEEK_API_KEY'),
       compressionEnabled =
           memory == null &&
@@ -113,12 +114,14 @@ class Agent {
   }
   final HistoryStorage? storage;
   final AgentMemory? memory;
+  final AgentProfiles? profiles;
   Future<void>? _initialization;
   String? storageWarning;
 
   Future<void> initialize() => _initialization ??= _restore();
 
   Future<void> _restore() async {
+    await profiles?.initialize();
     if (memory != null) {
       await memory!.initialize();
       return;
@@ -246,11 +249,15 @@ class Agent {
   }
 
   List<Map<String, String>> _context() {
-    if (memory != null) return memory!.context(config.systemPrompt);
+    final systemPrompt = [
+      if (config.systemPrompt.isNotEmpty) config.systemPrompt,
+      if (profiles != null) profiles!.active.instructions,
+    ].join('\n\n');
+    if (memory != null) return memory!.context(systemPrompt);
     if (config.strategy != null) {
       return [
-        if (config.systemPrompt.isNotEmpty)
-          {'role': 'system', 'content': config.systemPrompt},
+        if (systemPrompt.isNotEmpty)
+          {'role': 'system', 'content': systemPrompt},
         ...config.strategy!.build(
           messages: _messages,
           facts: _facts,
@@ -259,8 +266,8 @@ class Agent {
       ];
     }
     return [
-      if (config.systemPrompt.isNotEmpty)
-        {'role': 'system', 'content': config.systemPrompt},
+      if (systemPrompt.isNotEmpty)
+        {'role': 'system', 'content': systemPrompt},
       if (compressionEnabled && _summary.isNotEmpty)
         {
           'role': 'system',
