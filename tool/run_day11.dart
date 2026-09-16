@@ -49,7 +49,7 @@ Future<void> main() async {
     final row = <String, dynamic>{
       'stage': stage,
       ...snapshot(),
-      if (error != null) 'operation_error': error,
+      'operation_error': ?error,
       if (result != null) ...{
         'answer': result.content,
         'error': result.error,

@@ -7,6 +7,7 @@ import 'history_storage.dart';
 import 'context_strategy.dart';
 import 'agent_memory.dart';
 import 'agent_profile.dart';
+import 'agent_task.dart';
 export 'context_strategy.dart';
 export 'agent_memory.dart';
 
@@ -98,7 +99,7 @@ class AgentTurn {
 }
 
 class Agent {
-  Agent(this.config, {String? apiKey, this.storage, this.memory, this.profiles})
+  Agent(this.config, {String? apiKey, this.storage, this.memory, this.profiles, this.tasks})
     : _apiKey = apiKey ?? const String.fromEnvironment('DEEPSEEK_API_KEY'),
       compressionEnabled =
           memory == null &&
@@ -115,6 +116,7 @@ class Agent {
   final HistoryStorage? storage;
   final AgentMemory? memory;
   final AgentProfiles? profiles;
+  final TaskStorage? tasks;
   Future<void>? _initialization;
   String? storageWarning;
 
@@ -122,6 +124,7 @@ class Agent {
 
   Future<void> _restore() async {
     await profiles?.initialize();
+    await tasks?.initialize();
     if (memory != null) {
       await memory!.initialize();
       return;
@@ -252,6 +255,7 @@ class Agent {
     final systemPrompt = [
       if (config.systemPrompt.isNotEmpty) config.systemPrompt,
       if (profiles != null) profiles!.active.instructions,
+      if (tasks?.current != null) tasks!.current!.instructions,
     ].join('\n\n');
     if (memory != null) return memory!.context(systemPrompt);
     if (config.strategy != null) {
@@ -575,6 +579,22 @@ class Agent {
     _sending = true;
     try {
       await initialize();
+      if (tasks != null) {
+        final current = tasks!.current;
+        if (current?.state.isPaused == true) {
+          return const ApiResult(error: 'Task на паузе. Нажмите Resume.');
+        }
+        if (current?.state.stage == TaskStage.done) {
+          return const ApiResult(error: 'Task завершена. Нажмите «Новая задача».');
+        }
+        try {
+          await tasks!.save(current == null
+              ? Task(goal: text, state: TaskState.start(TaskStage.planning))
+              : current.withInput(text));
+        } catch (_) {
+          return const ApiResult(error: 'Не удалось сохранить Task. Запрос не отправлен.');
+        }
+      }
       if (memory != null) return await _sendWithMemory(text);
       // Retry the last unanswered message without appending it twice.
       final retry =
@@ -660,6 +680,7 @@ class Agent {
   /// Explicit compound boundary: new task + new session. This also removes old
   /// assistant replies which may have echoed task facts into the conversation.
   Future<String?> resetTask() => _memoryAction(() async {
+    await tasks?.save(null);
     await memory!.working.clear();
     _clearSession();
     return null;
@@ -685,6 +706,51 @@ class Agent {
     }
   }
 
+  Future<String?> advanceTask() => _taskAction(() async {
+    await tasks!.save(tasks!.current!.withState(tasks!.current!.state.advance()));
+    return null;
+  });
+
+  Future<String?> pauseTask() => _taskAction(() async {
+    await tasks!.save(tasks!.current!.withState(tasks!.current!.state.paused(true)));
+    return null;
+  });
+
+  Future<String?> resumeTask() => _taskAction(() async {
+    final current = tasks!.current!;
+    if (!current.state.isPaused) return 'Task уже активна.';
+    await tasks!.save(current.withState(current.state.paused(false)));
+    return _runTaskStep();
+  });
+
+  Future<String?> runTaskStep() => _taskAction(_runTaskStep);
+
+  Future<String?> _runTaskStep() async {
+    final state = tasks!.current!.state;
+    if (state.isPaused) return 'Сначала нажмите Resume.';
+    if (state.stage == TaskStage.done) return 'Задача завершена.';
+    // A completed step waits for explicit review/advance; never regenerate it on Resume.
+    if (state.hasResult) return null;
+    final result = await _sendWithMemory('Продолжи текущую задачу: выполни ожидаемое действие текущего этапа.');
+    return result.error;
+  }
+
+  Future<String?> _taskAction(Future<String?> Function() action) async {
+    if (_sending) return 'Дождитесь ответа.';
+    _sending = true;
+    try {
+      await initialize();
+      if (tasks?.current == null || memory == null) return 'Сначала отправьте цель задачи в чат.';
+      return await action();
+    } on StateError catch (error) {
+      return error.message.toString();
+    } catch (_) {
+      return 'Не удалось сохранить Task. Повторите действие.';
+    } finally {
+      _sending = false;
+    }
+  }
+
   Future<ApiResult> _sendWithMemory(String text) async {
     final short = memory!.shortTerm;
     final previous = short.messages.lastOrNull;
@@ -697,7 +763,18 @@ class Agent {
     );
     final result = await _request(messages: lastSentMessages);
     chatUsage.add(result);
-    if (result.error == null) short.add('assistant', result.content!);
+    if (result.error == null) {
+      short.add('assistant', result.content!);
+      if (tasks?.current != null && result.finishReason == 'stop') {
+        try {
+          await tasks!.save(tasks!.current!.withResult(result.content!));
+        } catch (_) {
+          tasks!.warning = 'Ответ получен, но результат Task не сохранён. Повторите этап.';
+        }
+      } else if (tasks != null) {
+        tasks!.warning = 'Ответ обрезан; этап не завершён. Повторите выполнение.';
+      }
+    }
     _rebuildTurns(resetDiagnostics: false);
     _lastCall = AgentTurn(userText: text, result: result);
     if (_turns.isNotEmpty) _turns[_turns.length - 1] = _lastCall!;

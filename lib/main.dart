@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'agent.dart';
 import 'agent_profile.dart';
+import 'agent_task.dart';
 import 'profile_editor.dart';
 import 'json_file_storage.dart';
 
@@ -14,7 +15,7 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'AI Advent — Day 12',
+    title: 'AI Advent — Day 13',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4154B3)),
@@ -44,6 +45,7 @@ class _AgentPageState extends State<AgentPage> {
           'Используй только переданные сведения о пользователе и задаче. '
           'Не угадывай отсутствующие факты: пиши «неизвестно».',
     ),
+    tasks: TaskStorage(_storage('day13-task')),
     profiles: AgentProfiles(_storage('day12-profiles')),
     memory: AgentMemory(
       working: WorkingMemory(_storage('day11-working')),
@@ -74,11 +76,12 @@ class _AgentPageState extends State<AgentPage> {
       _error = null;
     });
     final error = await action();
-    if (mounted)
+    if (mounted) {
       setState(() {
         _busy = false;
         _error = error;
       });
+    }
   }
 
   Future<void> _saveFact() async {
@@ -129,7 +132,7 @@ class _AgentPageState extends State<AgentPage> {
     length: 3,
     child: Scaffold(
       appBar: AppBar(
-        title: const Text('Day 12 · Профиль агента'),
+        title: const Text('Day 13 · Состояние задачи'),
         bottom: const TabBar(
           tabs: [
             Tab(text: 'Профиль'),
@@ -145,11 +148,11 @@ class _AgentPageState extends State<AgentPage> {
             child: Column(
               children: [
                 if (_busy) const LinearProgressIndicator(),
-                if (_error != null || _agent.profiles!.warning != null || _agent.memory!.warning != null)
+                if (_error != null || _agent.tasks!.warning != null || _agent.profiles!.warning != null || _agent.memory!.warning != null)
                   Padding(
                     padding: const EdgeInsets.all(12),
                     child: Text(
-                      _error ?? _agent.profiles!.warning ?? _agent.memory!.warning!,
+                      _error ?? _agent.tasks!.warning ?? _agent.profiles!.warning ?? _agent.memory!.warning!,
                       style: TextStyle(
                         color: Theme.of(context).colorScheme.error,
                       ),
@@ -261,7 +264,7 @@ class _AgentPageState extends State<AgentPage> {
         ),
         OutlinedButton(
           onPressed: _disabled ? null : () => _action(_agent.resetTask),
-          child: const Text('Новая задача: сбросить Short + Working'),
+          child: const Text('Новая задача: сбросить Task + Short + Working'),
         ),
         const Text(
           'Корзина у слоя очищает только его. Новая задача также начинает новую сессию, чтобы старые ответы не возвращали прежние факты.',
@@ -313,8 +316,78 @@ class _AgentPageState extends State<AgentPage> {
     ),
   );
 
+  Widget _taskCard() {
+    final task = _agent.tasks!.current;
+    if (task == null) {
+      return const Padding(
+        padding: EdgeInsets.all(12),
+        child: Text('Task: отправьте обычное сообщение, чтобы начать задачу.'),
+      );
+    }
+    final state = task.state;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 240),
+      child: SingleChildScrollView(
+        child: Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(state.isPaused ? 'TASK PAUSED' : 'TASK STATE',
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+                Text(TaskStage.values.map((s) => s == state.stage
+                    ? '[${s.name.toUpperCase()}]' : s.name.toUpperCase()).join(' → ')),
+                Text('Цель: ${task.goal}'),
+                Text('Stage: ${state.stage.name.toUpperCase()}'),
+                Text('Current step: ${state.currentStep}'),
+                Text('Expected action: ${state.expectedAction}'),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    if (state.stage != TaskStage.done) ...[
+                      OutlinedButton(
+                        onPressed: _disabled ? null : () => _action(
+                          state.isPaused ? _agent.resumeTask : _agent.pauseTask),
+                        child: Text(state.isPaused ? 'Resume' : 'Pause'),
+                      ),
+                      FilledButton(
+                        onPressed: _disabled || state.isPaused || state.hasResult
+                            ? null : () => _action(_agent.runTaskStep),
+                        child: const Text('Выполнить этап'),
+                      ),
+                      OutlinedButton(
+                        onPressed: _disabled || state.isPaused || !state.hasResult
+                            ? null : () => _action(_agent.advanceTask),
+                        child: Text('Далее → ${TaskWorkflow.next(state.stage).name.toUpperCase()}'),
+                      ),
+                    ],
+                    TextButton(
+                      onPressed: _disabled ? null : () => _action(_agent.resetTask),
+                      child: const Text('Новая задача'),
+                    ),
+                  ],
+                ),
+                if (task.results.isNotEmpty)
+                  ExpansionTile(
+                    title: const Text('Сохранённые результаты этапов'),
+                    children: [
+                      for (final result in task.results.entries)
+                        ListTile(title: Text(result.key.toUpperCase()),
+                            subtitle: SelectableText(result.value)),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _chatView() => Column(
     children: [
+      _taskCard(),
       Padding(
         padding: const EdgeInsets.all(8),
         child: Text('Активный профиль: ${_agent.profiles!.active.name}',
@@ -379,7 +452,7 @@ class _AgentPageState extends State<AgentPage> {
             Expanded(
               child: TextField(
                 controller: _input,
-                enabled: !_disabled,
+                enabled: !_disabled && _agent.tasks!.current?.state.isPaused != true && _agent.tasks!.current?.state.stage != TaskStage.done,
                 minLines: 1,
                 maxLines: 3,
                 decoration: const InputDecoration(
@@ -390,7 +463,7 @@ class _AgentPageState extends State<AgentPage> {
             ),
             const SizedBox(width: 8),
             FilledButton(
-              onPressed: _disabled ? null : _send,
+              onPressed: _disabled || _agent.tasks!.current?.state.isPaused == true || _agent.tasks!.current?.state.stage == TaskStage.done ? null : _send,
               child: const Text('Отправить'),
             ),
           ],
@@ -449,11 +522,12 @@ class _MemoryEditorState extends State<_MemoryEditor> {
               ),
             ],
             onChanged: (value) {
-              if (value != null)
+              if (value != null) {
                 setState(() {
                   _layer = value;
                   _error = null;
                 });
+              }
             },
           ),
           if (_layer != MemoryLayer.shortTerm)
