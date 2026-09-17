@@ -8,6 +8,7 @@ import 'context_strategy.dart';
 import 'agent_memory.dart';
 import 'agent_profile.dart';
 import 'agent_task.dart';
+import 'invariant.dart';
 export 'context_strategy.dart';
 export 'agent_memory.dart';
 
@@ -256,6 +257,8 @@ class Agent {
       if (config.systemPrompt.isNotEmpty) config.systemPrompt,
       if (profiles != null) profiles!.active.instructions,
       if (tasks?.current != null) tasks!.current!.instructions,
+      if (tasks?.current != null)
+        Invariant.instructions(tasks!.current!.invariants),
     ].join('\n\n');
     if (memory != null) return memory!.context(systemPrompt);
     if (config.strategy != null) {
@@ -765,7 +768,12 @@ class Agent {
     chatUsage.add(result);
     if (result.error == null) {
       short.add('assistant', result.content!);
-      if (tasks?.current != null && result.finishReason == 'stop') {
+      // A declared invariant conflict is not a completed workflow step.
+      final conflict = tasks?.current?.invariants.isNotEmpty == true &&
+          result.content!.trimLeft().startsWith(Invariant.conflictPrefix);
+      if (conflict) {
+        tasks!.warning = 'Конфликт с invariant: этап не завершён. Отправьте совместимый запрос.';
+      } else if (tasks?.current != null && result.finishReason == 'stop') {
         try {
           await tasks!.save(tasks!.current!.withResult(result.content!));
         } catch (_) {

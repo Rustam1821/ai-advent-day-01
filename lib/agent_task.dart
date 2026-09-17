@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'json_file_storage.dart';
+import 'invariant.dart';
 
 enum TaskStage { planning, execution, validation, done }
 
@@ -80,22 +81,24 @@ class TaskState {
 
 class Task {
   const Task({required this.goal, required this.state,
-    this.results = const {}, this.inputs = const []});
+    this.results = const {}, this.inputs = const [],
+    this.invariants = Invariant.demo});
   final String goal;
+  final List<Invariant> invariants;
   final TaskState state;
   // Task artifacts keep completed work available even after short-term eviction.
   final Map<String, String> results;
   final List<String> inputs;
 
   Task withState(TaskState next) => Task(
-    goal: goal, state: next, results: results, inputs: inputs,
+    goal: goal, state: next, results: results, inputs: inputs, invariants: invariants,
   );
   Task withInput(String input) => Task(
     goal: goal, state: TaskState.start(state.stage), results: results,
-    inputs: [...inputs, input],
+    inputs: [...inputs, input], invariants: invariants,
   );
   Task withResult(String result) => Task(
-    goal: goal, state: state.completed(), inputs: inputs,
+    goal: goal, state: state.completed(), inputs: inputs, invariants: invariants,
     results: {...results, state.stage.name: result},
   );
 
@@ -108,9 +111,13 @@ class Task {
 
   Map<String, dynamic> toJson() => {
     'goal': goal, 'state': state.toJson(), 'results': results, 'inputs': inputs,
+    'invariants': invariants.map((i) => i.toJson()).toList(),
   };
   factory Task.fromJson(Map<String, dynamic> json) => Task(
     goal: json['goal'] as String,
+    // Existing Day 13 tasks keep their original scope; new tasks get demo rules.
+    invariants: List.unmodifiable((json['invariants'] as List? ?? [])
+        .map(Invariant.fromJson)),
     state: TaskState.fromJson(Map<String, dynamic>.from(json['state'] as Map)),
     results: Map<String, String>.from(json['results'] as Map),
     inputs: List<String>.from(json['inputs'] as List),

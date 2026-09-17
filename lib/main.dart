@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'agent.dart';
 import 'agent_profile.dart';
 import 'agent_task.dart';
+import 'invariant.dart';
 import 'profile_editor.dart';
 import 'json_file_storage.dart';
 
@@ -15,7 +16,7 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'AI Advent — Day 13',
+    title: 'AI Advent — Day 14',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4154B3)),
@@ -129,15 +130,16 @@ class _AgentPageState extends State<AgentPage> {
 
   @override
   Widget build(BuildContext context) => DefaultTabController(
-    length: 3,
+    length: 4,
     child: Scaffold(
       appBar: AppBar(
-        title: const Text('Day 13 · Состояние задачи'),
+        title: const Text('Day 14 · Invariants'),
         bottom: const TabBar(
           tabs: [
             Tab(text: 'Профиль'),
             Tab(text: 'Память'),
             Tab(text: 'Чат'),
+            Tab(text: 'Детали'),
           ],
         ),
       ),
@@ -161,7 +163,7 @@ class _AgentPageState extends State<AgentPage> {
                 Expanded(
                   child: _loading
                       ? const Center(child: CircularProgressIndicator())
-                      : TabBarView(children: [_profileView(), _memoryView(), _chatView()]),
+                      : TabBarView(children: [_profileView(), _memoryView(), _chatView(), _detailsView()]),
                 ),
               ],
             ),
@@ -385,8 +387,25 @@ class _AgentPageState extends State<AgentPage> {
     );
   }
 
-  Widget _chatView() => Column(
+  Widget _invariantsView() {
+    final task = _agent.tasks!.current;
+    final invariants = task?.invariants ?? Invariant.demo;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Text([
+          task == null ? 'INVARIANTS · для новой задачи' : 'ACTIVE INVARIANTS · Task',
+          if (invariants.isEmpty) 'Нет правил у старой Task. Начните новую задачу.',
+          for (final invariant in invariants) '• ${invariant.rule}',
+        ].join('\n')),
+      ),
+    );
+  }
+
+  Widget _detailsView() => ListView(
     children: [
+      _invariantsView(),
       _taskCard(),
       Padding(
         padding: const EdgeInsets.all(8),
@@ -401,6 +420,27 @@ class _AgentPageState extends State<AgentPage> {
           'Всего за сессию: ${_agent.chatUsage.total} tokens'
           '${_agent.chatUsage.unknown > 0 ? ' · есть вызовы без usage' : ''}',
         ),
+      ),
+      if (_agent.lastCall != null)
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Text(
+            'Current message ≈ ${_agent.lastCall!.estimatedMessageTokens} (оценка) · '
+            'Total call: ${_agent.lastCall!.result?.total ?? '—'} (API)',
+          ),
+        ),
+    ],
+  );
+
+  Widget _chatView() => Column(
+    children: [
+      Align(
+        alignment: Alignment.centerRight,
+        child: Builder(builder: (context) => TextButton.icon(
+          onPressed: () => DefaultTabController.of(context).animateTo(3),
+          icon: const Icon(Icons.info_outline, size: 18),
+          label: const Text('Детали задачи и правила'),
+        )),
       ),
       Expanded(
         child: _agent.visibleMessages.isEmpty
@@ -437,14 +477,6 @@ class _AgentPageState extends State<AgentPage> {
                 ],
               ),
       ),
-      if (_agent.lastCall != null)
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Text(
-            'Current message ≈ ${_agent.lastCall!.estimatedMessageTokens} (оценка) · '
-            'Total call: ${_agent.lastCall!.result?.total ?? '—'} (API)',
-          ),
-        ),
       Padding(
         padding: const EdgeInsets.all(12),
         child: Row(
