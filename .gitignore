@@ -48,3 +48,6 @@ app.*.map.json
 .widget_preview/
 
 .env
+
+# Day 18 server runtime data
+/server/data/
