@@ -16,7 +16,7 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'AI Advent — Day 14',
+    title: 'AI Advent — Day 15',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4154B3)),
@@ -46,7 +46,7 @@ class _AgentPageState extends State<AgentPage> {
           'Используй только переданные сведения о пользователе и задаче. '
           'Не угадывай отсутствующие факты: пиши «неизвестно».',
     ),
-    tasks: TaskStorage(_storage('day13-task')),
+    tasks: TaskStorage(_storage('day15-task')),
     profiles: AgentProfiles(_storage('day12-profiles')),
     memory: AgentMemory(
       working: WorkingMemory(_storage('day11-working')),
@@ -54,6 +54,8 @@ class _AgentPageState extends State<AgentPage> {
     ),
   );
   final _input = TextEditingController();
+  final _goal = TextEditingController(text: 'Подготовить план поездки на выходные');
+  TaskStage _targetStage = TaskStage.done;
   final _scroll = ScrollController();
   bool _loading = true, _busy = false;
   String? _error;
@@ -124,6 +126,7 @@ class _AgentPageState extends State<AgentPage> {
   @override
   void dispose() {
     _input.dispose();
+    _goal.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -131,15 +134,16 @@ class _AgentPageState extends State<AgentPage> {
   @override
   Widget build(BuildContext context) => DefaultTabController(
     length: 4,
+    initialIndex: 3,
     child: Scaffold(
       appBar: AppBar(
-        title: const Text('Day 14 · Invariants'),
+        title: const Text('Day 15 · Контролируемая FSM'),
         bottom: const TabBar(
           tabs: [
             Tab(text: 'Профиль'),
             Tab(text: 'Память'),
             Tab(text: 'Чат'),
-            Tab(text: 'Детали'),
+            Tab(text: 'FSM'),
           ],
         ),
       ),
@@ -321,75 +325,77 @@ class _AgentPageState extends State<AgentPage> {
   Widget _taskCard() {
     final task = _agent.tasks!.current;
     if (task == null) {
-      return const Padding(
-        padding: EdgeInsets.all(12),
-        child: Text('Task: отправьте обычное сообщение, чтобы начать задачу.'),
+      return Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(children: [
+          TextField(controller: _goal, decoration: const InputDecoration(labelText: 'Цель задачи')),
+          FilledButton(onPressed: _disabled ? null : () => _action(
+            () => _agent.createDemoTask(_goal.text)), child: const Text('Создать Task (без LLM)')),
+        ]),
       );
     }
     final state = task.state;
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxHeight: 240),
-      child: SingleChildScrollView(
-        child: Card(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(state.isPaused ? 'TASK PAUSED' : 'TASK STATE',
-                    style: const TextStyle(fontWeight: FontWeight.bold)),
-                Text(TaskStage.values.map((s) => s == state.stage
-                    ? '[${s.name.toUpperCase()}]' : s.name.toUpperCase()).join(' → ')),
-                Text('Цель: ${task.goal}'),
-                Text('Stage: ${state.stage.name.toUpperCase()}'),
-                Text('Current step: ${state.currentStep}'),
-                Text('Expected action: ${state.expectedAction}'),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    if (state.stage != TaskStage.done) ...[
-                      OutlinedButton(
-                        onPressed: _disabled ? null : () => _action(
-                          state.isPaused ? _agent.resumeTask : _agent.pauseTask),
-                        child: Text(state.isPaused ? 'Resume' : 'Pause'),
-                      ),
-                      FilledButton(
-                        onPressed: _disabled || state.isPaused || state.hasResult
-                            ? null : () => _action(_agent.runTaskStep),
-                        child: const Text('Выполнить этап'),
-                      ),
-                      OutlinedButton(
-                        onPressed: _disabled || state.isPaused || !state.hasResult
-                            ? null : () => _action(_agent.advanceTask),
-                        child: Text('Далее → ${TaskWorkflow.next(state.stage).name.toUpperCase()}'),
-                      ),
-                    ],
-                    TextButton(
-                      onPressed: _disabled ? null : () => _action(_agent.resetTask),
-                      child: const Text('Новая задача'),
-                    ),
-                  ],
-                ),
-                if (task.results.isNotEmpty)
-                  ExpansionTile(
-                    title: const Text('Сохранённые результаты этапов'),
-                    children: [
-                      for (final result in task.results.entries)
-                        ListTile(title: Text(result.key.toUpperCase()),
-                            subtitle: SelectableText(result.value)),
-                    ],
-                  ),
-              ],
-            ),
-          ),
+    final last = _agent.tasks!.lastTransition;
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Current Stage: ${state.stage.name.toUpperCase()}',
+            style: Theme.of(context).textTheme.titleLarge),
+        Text('Цель: ${task.goal}'),
+        Text('Plan approved: ${state.planApproved ? 'YES' : 'NO'}'),
+        Text('Validation passed: ${state.validationPassed ? 'YES' : 'NO'}'),
+        Text('Paused: ${state.isPaused ? 'YES' : 'NO'}'),
+        const SizedBox(height: 8),
+        const Text('Граф: PLANNING → EXECUTION → VALIDATION → DONE\n'
+            'Возврат: VALIDATION → EXECUTION'),
+        const SizedBox(height: 8),
+        DropdownButtonFormField<TaskStage>(
+          initialValue: _targetStage,
+          decoration: const InputDecoration(labelText: 'Запросить переход в'),
+          items: [for (final stage in TaskStage.values)
+            DropdownMenuItem(value: stage, child: Text(stage.name.toUpperCase()))],
+          onChanged: _disabled ? null : (value) {
+            if (value != null) setState(() => _targetStage = value);
+          },
         ),
-      ),
+        FilledButton(onPressed: _disabled ? null : () => _action(
+          () => _agent.transitionTask(_targetStage)), child: const Text('Transition')),
+        if (last != null) Card(child: Padding(
+          padding: const EdgeInsets.all(12), child: SelectableText(last.description))),
+        Wrap(spacing: 8, children: [
+          if (state.stage == TaskStage.planning)
+            OutlinedButton(onPressed: _disabled || state.isPaused ? null
+              : () => _action(_agent.approvePlan), child: const Text('Approve Plan')),
+          if (state.stage == TaskStage.validation) ...[
+            OutlinedButton(onPressed: _disabled || state.isPaused ? null
+              : () => _action(() => _agent.setValidation(false)), child: const Text('Validation failed')),
+            OutlinedButton(onPressed: _disabled || state.isPaused ? null
+              : () => _action(() => _agent.setValidation(true)), child: const Text('Validation passed')),
+          ],
+          if (state.stage != TaskStage.done)
+            OutlinedButton(onPressed: _disabled ? null : () => _action(
+              state.isPaused ? _agent.resumeTask : _agent.pauseTask),
+              child: Text(state.isPaused ? 'Resume' : 'Pause')),
+          TextButton(onPressed: _disabled ? null : () => _action(_agent.resetTask),
+              child: const Text('Новая задача')),
+        ]),
+        const Text('Approval и validation — явные решения пользователя. '
+            'Переходы и Resume не вызывают LLM. Новое содержимое сбрасывает соответствующее подтверждение.'),
+        ExpansionTile(title: const Text('Работа Agent и результаты'), children: [
+          Text('Current step: ${state.currentStep}\nExpected action: ${state.expectedAction}'),
+          OutlinedButton(onPressed: _disabled || state.isPaused || state.hasResult || state.stage == TaskStage.done
+            ? null : () => _action(_agent.runTaskStep), child: const Text('Выполнить этап через LLM')),
+          for (final entry in task.results.entries)
+            ListTile(title: Text(entry.key), subtitle: SelectableText(entry.value)),
+        ]),
+      ]),
     );
   }
 
   Widget _invariantsView() {
     final task = _agent.tasks!.current;
-    final invariants = task?.invariants ?? Invariant.demo;
+    final invariants = task?.invariants ?? const <Invariant>[];
+    if (invariants.isEmpty) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       child: Align(
@@ -405,8 +411,8 @@ class _AgentPageState extends State<AgentPage> {
 
   Widget _detailsView() => ListView(
     children: [
-      _invariantsView(),
       _taskCard(),
+      _invariantsView(),
       Padding(
         padding: const EdgeInsets.all(8),
         child: Text('Активный профиль: ${_agent.profiles!.active.name}',
@@ -439,7 +445,7 @@ class _AgentPageState extends State<AgentPage> {
         child: Builder(builder: (context) => TextButton.icon(
           onPressed: () => DefaultTabController.of(context).animateTo(3),
           icon: const Icon(Icons.info_outline, size: 18),
-          label: const Text('Детали задачи и правила'),
+          label: const Text('FSM · состояние задачи'),
         )),
       ),
       Expanded(

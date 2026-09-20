@@ -591,9 +591,11 @@ class Agent {
           return const ApiResult(error: 'Task завершена. Нажмите «Новая задача».');
         }
         try {
-          await tasks!.save(current == null
-              ? Task(goal: text, state: TaskState.start(TaskStage.planning))
-              : current.withInput(text));
+          if (current == null) {
+            await tasks!.create(text);
+          } else {
+            await tasks!.addInput(text);
+          }
         } catch (_) {
           return const ApiResult(error: 'Не удалось сохранить Task. Запрос не отправлен.');
         }
@@ -683,7 +685,7 @@ class Agent {
   /// Explicit compound boundary: new task + new session. This also removes old
   /// assistant replies which may have echoed task facts into the conversation.
   Future<String?> resetTask() => _memoryAction(() async {
-    await tasks?.save(null);
+    await tasks?.clear();
     await memory!.working.clear();
     _clearSession();
     return null;
@@ -709,22 +711,20 @@ class Agent {
     }
   }
 
-  Future<String?> advanceTask() => _taskAction(() async {
-    await tasks!.save(tasks!.current!.withState(tasks!.current!.state.advance()));
+  Future<String?> createDemoTask(String goal) => _memoryAction(() async {
+    await tasks!.create(goal);
     return null;
   });
 
-  Future<String?> pauseTask() => _taskAction(() async {
-    await tasks!.save(tasks!.current!.withState(tasks!.current!.state.paused(true)));
-    return null;
+  Future<String?> transitionTask(TaskStage target) => _taskAction(() async {
+    await tasks!.transition(target);
+    return null; // The typed result is displayed in the FSM panel.
   });
-
-  Future<String?> resumeTask() => _taskAction(() async {
-    final current = tasks!.current!;
-    if (!current.state.isPaused) return 'Task уже активна.';
-    await tasks!.save(current.withState(current.state.paused(false)));
-    return _runTaskStep();
-  });
+  Future<String?> approvePlan() => _taskAction(() => tasks!.approvePlan());
+  Future<String?> setValidation(bool passed) =>
+      _taskAction(() => tasks!.setValidation(passed));
+  Future<String?> pauseTask() => _taskAction(() => tasks!.setPaused(true));
+  Future<String?> resumeTask() => _taskAction(() => tasks!.setPaused(false));
 
   Future<String?> runTaskStep() => _taskAction(_runTaskStep);
 
@@ -775,7 +775,7 @@ class Agent {
         tasks!.warning = 'Конфликт с invariant: этап не завершён. Отправьте совместимый запрос.';
       } else if (tasks?.current != null && result.finishReason == 'stop') {
         try {
-          await tasks!.save(tasks!.current!.withResult(result.content!));
+          await tasks!.recordResult(result.content!);
         } catch (_) {
           tasks!.warning = 'Ответ получен, но результат Task не сохранён. Повторите этап.';
         }
