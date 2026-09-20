@@ -1,606 +1,133 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 
-import 'agent.dart';
-import 'agent_profile.dart';
-import 'agent_task.dart';
-import 'invariant.dart';
-import 'profile_editor.dart';
-import 'json_file_storage.dart';
+import 'mcp_client_service.dart';
 
 void main() => runApp(const MyApp());
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
+
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'AI Advent — Day 14',
+    title: 'AI Advent — Day 16',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4154B3)),
       scaffoldBackgroundColor: const Color(0xFFF5F6FA),
       useMaterial3: true,
     ),
-    home: const AgentPage(),
+    home: const McpPage(),
   );
 }
 
-class AgentPage extends StatefulWidget {
-  const AgentPage({super.key});
+class McpPage extends StatefulWidget {
+  const McpPage({super.key});
   @override
-  State<AgentPage> createState() => _AgentPageState();
+  State<McpPage> createState() => _McpPageState();
 }
 
-class _AgentPageState extends State<AgentPage> {
-  static JsonFileStorage _storage(String name) => JsonFileStorage(() async {
-    final directory = await getApplicationSupportDirectory();
-    return File('${directory.path}/$name.json');
-  });
-  final _agent = Agent(
-    const AgentConfig(
-      strategy: SlidingWindow(),
-      systemPrompt:
-          'Ты полезный помощник. Отвечай по-русски. '
-          'Используй только переданные сведения о пользователе и задаче. '
-          'Не угадывай отсутствующие факты: пиши «неизвестно».',
-    ),
-    tasks: TaskStorage(_storage('day13-task')),
-    profiles: AgentProfiles(_storage('day12-profiles')),
-    memory: AgentMemory(
-      working: WorkingMemory(_storage('day11-working')),
-      longTerm: LongTermMemory(_storage('day11-long-term')),
-    ),
-  );
-  final _input = TextEditingController();
-  final _scroll = ScrollController();
-  bool _loading = true, _busy = false;
-  String? _error;
-  bool get _disabled => _loading || _busy;
-
-  @override
-  void initState() {
-    super.initState();
-    _restore();
-  }
-
-  Future<void> _restore() async {
-    await _agent.initialize();
-    if (mounted) setState(() => _loading = false);
-  }
-
-  Future<void> _action(Future<String?> Function() action) async {
-    if (_disabled) return;
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    final error = await action();
-    if (mounted) {
-      setState(() {
-        _busy = false;
-        _error = error;
-      });
-    }
-  }
-
-  Future<void> _saveFact() async {
-    final fact = await showDialog<_Fact>(
-      context: context,
-      builder: (_) => const _MemoryEditor(),
-    );
-    if (!mounted || fact == null) return;
-    await _action(
-      () => _agent.saveMemory(fact.layer, key: fact.key, value: fact.value),
-    );
-  }
-
-  Future<void> _send() async {
-    if (_disabled || _input.text.trim().isEmpty) return;
-    FocusScope.of(context).unfocus();
-    setState(() {
-      _busy = true;
-      _error = null;
-    });
-    final result = await _agent.send(_input.text);
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _error = result.error;
-      if (result.error == null) _input.clear();
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _scroll.hasClients) {
-        _scroll.animateTo(
-          _scroll.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOut,
-        );
-      }
-    });
-  }
+class _McpPageState extends State<McpPage> {
+  final _service = McpClientService();
 
   @override
   void dispose() {
-    _input.dispose();
-    _scroll.dispose();
+    _service.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => DefaultTabController(
-    length: 4,
-    child: Scaffold(
-      appBar: AppBar(
-        title: const Text('Day 14 · Invariants'),
-        bottom: const TabBar(
-          tabs: [
-            Tab(text: 'Профиль'),
-            Tab(text: 'Память'),
-            Tab(text: 'Чат'),
-            Tab(text: 'Детали'),
-          ],
-        ),
-      ),
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 800),
-            child: Column(
-              children: [
-                if (_busy) const LinearProgressIndicator(),
-                if (_error != null || _agent.tasks!.warning != null || _agent.profiles!.warning != null || _agent.memory!.warning != null)
-                  Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Text(
-                      _error ?? _agent.tasks!.warning ?? _agent.profiles!.warning ?? _agent.memory!.warning!,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                    ),
-                  ),
-                Expanded(
-                  child: _loading
-                      ? const Center(child: CircularProgressIndicator())
-                      : TabBarView(children: [_profileView(), _memoryView(), _chatView(), _detailsView()]),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    ),
-  );
-
-  Future<void> _editProfile() async {
-    final profile = await showDialog<AgentProfile>(
-      context: context,
-      builder: (_) => ProfileEditor(profile: _agent.profiles!.active),
-    );
-    if (!mounted || profile == null) return;
-    await _action(() => _agent.profiles!.update(profile));
-  }
-
-  Widget _profileView() {
-    final profiles = _agent.profiles!;
-    final active = profiles.active;
-    return ListView(
-      padding: const EdgeInsets.all(12),
-      children: [
-        const Text('Profile — как отвечать. Memory — узнанные факты.\n'
-            'Настройки применяются автоматически к каждому сообщению.'),
-        const SizedBox(height: 12),
-        DropdownButtonFormField<String>(
-          initialValue: active.id,
-          decoration: const InputDecoration(labelText: 'Активный профиль'),
-          items: [
-            for (final profile in profiles.profiles)
-              DropdownMenuItem(value: profile.id, child: Text(profile.name)),
-          ],
-          onChanged: _disabled ? null : (id) {
-            if (id != null) _action(() => profiles.select(id));
-          },
-          key: ValueKey(active.id),
-        ),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: SelectableText('Активен: ${active.name}\n\n'
-                'Обращение: ${active.userName}\n\n'
-                'Стиль: ${active.style}\n\n'
-                'Формат: ${active.format}\n\n'
-                'Ограничения: ${active.constraints}'),
-          ),
-        ),
-        FilledButton.icon(
-          onPressed: _disabled ? null : _editProfile,
-          icon: const Icon(Icons.edit_outlined),
-          label: const Text('Редактировать профиль'),
-        ),
-        const SizedBox(height: 8),
-        const Text('Оба профиля и активный выбор сохраняются локально. '
-            'Переключение профиля и очистка памяти независимы.'),
-      ],
-    );
-  }
-
-  Widget _memoryView() {
-    final memory = _agent.memory!;
-    return ListView(
-      padding: const EdgeInsets.all(12),
-      children: [
-        const Text(
-          'Факты записываются только в выбранный слой.\nСообщения чата → Short-Term.',
-        ),
-        const SizedBox(height: 8),
-        _memoryCard(
-          'SHORT-TERM',
-          'Сессия · последние ${memory.shortTerm.windowSize} сообщений',
-          MemoryLayer.shortTerm,
-          memory.shortTerm.messages
-              .map((m) => '${m['role']}: ${m['content']}')
-              .toList(),
-        ),
-        _memoryCard(
-          'WORKING',
-          'Текущая задача · сохраняется при restart',
-          MemoryLayer.working,
-          memory.working.values.entries
-              .map((e) => '${e.key} = ${e.value}')
-              .toList(),
-        ),
-        _memoryCard(
-          'LONG-TERM',
-          'Узнанные факты и предпочтения · между задачами',
-          MemoryLayer.longTerm,
-          memory.longTerm.values.entries
-              .map((e) => '${e.key} = ${e.value}')
-              .toList(),
-        ),
-        const SizedBox(height: 8),
-        FilledButton.icon(
-          onPressed: _disabled ? null : _saveFact,
-          icon: const Icon(Icons.add),
-          label: const Text('Сохранить факт…'),
-        ),
-        OutlinedButton(
-          onPressed: _disabled ? null : () => _action(_agent.resetTask),
-          child: const Text('Новая задача: сбросить Task + Short + Working'),
-        ),
-        const Text(
-          'Корзина у слоя очищает только его. Новая задача также начинает новую сессию, чтобы старые ответы не возвращали прежние факты.',
-        ),
-      ],
-    );
-  }
-
-  Widget _memoryCard(
-    String title,
-    String lifetime,
-    MemoryLayer layer,
-    List<String> values,
-  ) => Card(
-    child: Padding(
-      padding: const EdgeInsets.fromLTRB(12, 4, 4, 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              IconButton(
-                tooltip: 'Clear $title',
-                icon: const Icon(Icons.delete_outline),
-                onPressed: _disabled
-                    ? null
-                    : () => _action(() => _agent.clearMemory(layer)),
-              ),
-            ],
-          ),
-          Text(lifetime, style: Theme.of(context).textTheme.bodySmall),
-          const SizedBox(height: 6),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 130),
-            child: SingleChildScrollView(
-              child: SelectableText(
-                values.isEmpty ? 'Пусто' : values.join('\n'),
-              ),
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
-
-  Widget _taskCard() {
-    final task = _agent.tasks!.current;
-    if (task == null) {
-      return const Padding(
-        padding: EdgeInsets.all(12),
-        child: Text('Task: отправьте обычное сообщение, чтобы начать задачу.'),
-      );
-    }
-    final state = task.state;
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxHeight: 240),
-      child: SingleChildScrollView(
-        child: Card(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(state.isPaused ? 'TASK PAUSED' : 'TASK STATE',
-                    style: const TextStyle(fontWeight: FontWeight.bold)),
-                Text(TaskStage.values.map((s) => s == state.stage
-                    ? '[${s.name.toUpperCase()}]' : s.name.toUpperCase()).join(' → ')),
-                Text('Цель: ${task.goal}'),
-                Text('Stage: ${state.stage.name.toUpperCase()}'),
-                Text('Current step: ${state.currentStep}'),
-                Text('Expected action: ${state.expectedAction}'),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    if (state.stage != TaskStage.done) ...[
-                      OutlinedButton(
-                        onPressed: _disabled ? null : () => _action(
-                          state.isPaused ? _agent.resumeTask : _agent.pauseTask),
-                        child: Text(state.isPaused ? 'Resume' : 'Pause'),
-                      ),
-                      FilledButton(
-                        onPressed: _disabled || state.isPaused || state.hasResult
-                            ? null : () => _action(_agent.runTaskStep),
-                        child: const Text('Выполнить этап'),
-                      ),
-                      OutlinedButton(
-                        onPressed: _disabled || state.isPaused || !state.hasResult
-                            ? null : () => _action(_agent.advanceTask),
-                        child: Text('Далее → ${TaskWorkflow.next(state.stage).name.toUpperCase()}'),
-                      ),
-                    ],
-                    TextButton(
-                      onPressed: _disabled ? null : () => _action(_agent.resetTask),
-                      child: const Text('Новая задача'),
-                    ),
-                  ],
-                ),
-                if (task.results.isNotEmpty)
-                  ExpansionTile(
-                    title: const Text('Сохранённые результаты этапов'),
-                    children: [
-                      for (final result in task.results.entries)
-                        ListTile(title: Text(result.key.toUpperCase()),
-                            subtitle: SelectableText(result.value)),
-                    ],
-                  ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _invariantsView() {
-    final task = _agent.tasks!.current;
-    final invariants = task?.invariants ?? Invariant.demo;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: Text([
-          task == null ? 'INVARIANTS · для новой задачи' : 'ACTIVE INVARIANTS · Task',
-          if (invariants.isEmpty) 'Нет правил у старой Task. Начните новую задачу.',
-          for (final invariant in invariants) '• ${invariant.rule}',
-        ].join('\n')),
-      ),
-    );
-  }
-
-  Widget _detailsView() => ListView(
-    children: [
-      _invariantsView(),
-      _taskCard(),
-      Padding(
-        padding: const EdgeInsets.all(8),
-        child: Text('Активный профиль: ${_agent.profiles!.active.name}',
-            style: const TextStyle(fontWeight: FontWeight.bold)),
-      ),
-      Padding(
-        padding: const EdgeInsets.all(12),
-        child: Text(
-          'Context: ${_agent.lastCall?.result?.input ?? '—'} · '
-          'Response: ${_agent.lastCall?.result?.output ?? '—'} (API)\n'
-          'Всего за сессию: ${_agent.chatUsage.total} tokens'
-          '${_agent.chatUsage.unknown > 0 ? ' · есть вызовы без usage' : ''}',
-        ),
-      ),
-      if (_agent.lastCall != null)
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Text(
-            'Current message ≈ ${_agent.lastCall!.estimatedMessageTokens} (оценка) · '
-            'Total call: ${_agent.lastCall!.result?.total ?? '—'} (API)',
-          ),
-        ),
-    ],
-  );
-
-  Widget _chatView() => Column(
-    children: [
-      Align(
-        alignment: Alignment.centerRight,
-        child: Builder(builder: (context) => TextButton.icon(
-          onPressed: () => DefaultTabController.of(context).animateTo(3),
-          icon: const Icon(Icons.info_outline, size: 18),
-          label: const Text('Детали задачи и правила'),
-        )),
-      ),
-      Expanded(
-        child: _agent.visibleMessages.isEmpty
-            ? const Center(
-                child: Text(
-                  'Новая сессия. Working и Long-Term доступны агенту.',
-                ),
-              )
-            : ListView(
-                controller: _scroll,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Day 16 · MCP')),
+    body: SafeArea(
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 800),
+          child: ListenableBuilder(
+            listenable: _service,
+            builder: (context, _) {
+              final connected = _service.status == McpStatus.connected;
+              final busy = _service.status == McpStatus.connecting || _service.loadingTools;
+              final status = switch (_service.status) {
+                McpStatus.disconnected => 'Disconnected',
+                McpStatus.connecting => 'Connecting…',
+                McpStatus.connected => 'Connected',
+                McpStatus.error => 'Error',
+              };
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  for (final message in _agent.visibleMessages)
-                    Card(
-                      color: message['role'] == 'user'
-                          ? Theme.of(context).colorScheme.primaryContainer
-                          : null,
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              message['role'] == 'user' ? 'Вы' : 'Агент',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            SelectableText(message['content']!),
-                          ],
-                        ),
-                      ),
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Microsoft Learn MCP', style: Theme.of(context).textTheme.titleLarge),
+                        SelectableText(McpClientService.endpoint.toString()),
+                        const Text('Streamable HTTP · без API key'),
+                        const SizedBox(height: 16),
+                        Text('Status: $status', style: Theme.of(context).textTheme.titleMedium),
+                        const SizedBox(height: 8),
+                        Wrap(spacing: 12, children: [
+                          FilledButton(
+                            onPressed: busy || connected ? null : _service.connect,
+                            child: const Text('Connect'),
+                          ),
+                          OutlinedButton(
+                            onPressed: busy || !connected ? null : _service.getTools,
+                            child: const Text('Get Tools'),
+                          ),
+                        ]),
+                        if (busy) ...[
+                          const SizedBox(height: 12),
+                          const LinearProgressIndicator(),
+                          Text(_service.loadingTools ? 'Loading tools…' : 'Initializing MCP…'),
+                        ],
+                        if (_service.error != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 12),
+                            child: Text(_service.error!, style: TextStyle(
+                              color: Theme.of(context).colorScheme.error)),
+                          ),
+                        if (_service.toolsLoaded) ...[
+                          const SizedBox(height: 12),
+                          Text('Available tools: ${_service.tools.length}',
+                              style: Theme.of(context).textTheme.titleMedium),
+                        ],
+                      ],
                     ),
+                  ),
+                  Expanded(
+                    child: _service.toolsLoaded
+                        ? _service.tools.isEmpty
+                            ? const Center(child: Text('Сервер вернул пустой список tools.'))
+                            : ListView.builder(
+                                padding: const EdgeInsets.symmetric(horizontal: 12),
+                                itemCount: _service.tools.length,
+                                itemBuilder: (context, index) {
+                                  final tool = _service.tools[index];
+                                  return Card(child: Padding(
+                                    padding: const EdgeInsets.all(12),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        SelectableText(tool.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                        if (tool.description?.isNotEmpty == true) ...[
+                                          const SizedBox(height: 6),
+                                          SelectableText(tool.description!),
+                                        ],
+                                      ],
+                                    ),
+                                  ));
+                                },
+                              )
+                        : const Center(child: Text('Connect → Get Tools')),
+                  ),
                 ],
-              ),
-      ),
-      Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _input,
-                enabled: !_disabled && _agent.tasks!.current?.state.isPaused != true && _agent.tasks!.current?.state.stage != TaskStage.done,
-                minLines: 1,
-                maxLines: 3,
-                decoration: const InputDecoration(
-                  labelText: 'Сообщение → Short-Term',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            FilledButton(
-              onPressed: _disabled || _agent.tasks!.current?.state.isPaused == true || _agent.tasks!.current?.state.stage == TaskStage.done ? null : _send,
-              child: const Text('Отправить'),
-            ),
-          ],
-        ),
-      ),
-    ],
-  );
-}
-
-class _Fact {
-  const _Fact(this.layer, this.key, this.value);
-  final MemoryLayer layer;
-  final String key, value;
-}
-
-class _MemoryEditor extends StatefulWidget {
-  const _MemoryEditor();
-  @override
-  State<_MemoryEditor> createState() => _MemoryEditorState();
-}
-
-class _MemoryEditorState extends State<_MemoryEditor> {
-  MemoryLayer _layer = MemoryLayer.shortTerm;
-  final _key = TextEditingController();
-  final _value = TextEditingController();
-  String? _error;
-  @override
-  void dispose() {
-    _key.dispose();
-    _value.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Сохранить факт'),
-    content: SingleChildScrollView(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          DropdownButton<MemoryLayer>(
-            value: _layer,
-            isExpanded: true,
-            items: const [
-              DropdownMenuItem(
-                value: MemoryLayer.shortTerm,
-                child: Text('Short-Term · сессия'),
-              ),
-              DropdownMenuItem(
-                value: MemoryLayer.working,
-                child: Text('Working · задача'),
-              ),
-              DropdownMenuItem(
-                value: MemoryLayer.longTerm,
-                child: Text('Long-Term · постоянно'),
-              ),
-            ],
-            onChanged: (value) {
-              if (value != null) {
-                setState(() {
-                  _layer = value;
-                  _error = null;
-                });
-              }
+              );
             },
           ),
-          if (_layer != MemoryLayer.shortTerm)
-            TextField(
-              controller: _key,
-              decoration: const InputDecoration(labelText: 'Ключ'),
-            ),
-          TextField(
-            controller: _value,
-            minLines: 2,
-            maxLines: 4,
-            decoration: const InputDecoration(labelText: 'Значение / факт'),
-          ),
-          if (_layer != MemoryLayer.shortTerm)
-            const Text(
-              'Запись с тем же ключом заменит значение. В чат не добавляется.',
-            ),
-          if (_error != null)
-            Text(
-              _error!,
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
-            ),
-        ],
+        ),
       ),
     ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('Отмена'),
-      ),
-      FilledButton(
-        onPressed: () {
-          if (_value.text.trim().isEmpty ||
-              (_layer != MemoryLayer.shortTerm && _key.text.trim().isEmpty)) {
-            setState(() => _error = 'Заполните поля.');
-            return;
-          }
-          Navigator.pop(context, _Fact(_layer, _key.text, _value.text));
-        },
-        child: const Text('Сохранить'),
-      ),
-    ],
   );
 }
