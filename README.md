@@ -1,165 +1,59 @@
-# AI Advent — Day 10 · Context strategies без summary
+# Day 17 — Agent → custom MCP tool → answer
 
-Одно приложение, один Agent/API и три независимых контекста:
-**Sliding Window / Sticky Facts / Branching**. Используется существующий
-`DEEPSEEK_API_KEY` из ignored `.env`, новых ключей и зависимостей нет.
+Server: `server/task_server.dart`, SDK `mcp_dart` 2.4.2, Streamable HTTP.
+The same installed SDK provides both server and client: no Node/Python setup.
+Mock records exist only on the server: AI-101 (In Progress / Alex),
+AI-102 (Done / Maria), AI-103 (Blocked / John).
+
+`get_task_status` is registered using `registerTool`, with a description and
+object input schema requiring `taskId: string`. Unknown IDs return `found: false`.
+
+## Run manually (from repository root)
+
+Terminal 1:
 
 ```sh
-flutter run --dart-define-from-file=.env
+dart run server/task_server.dart
 ```
 
-## Архитектура и границы стратегий
+Terminal 2, with an iOS simulator already open:
 
-`lib/context_strategy.dart` содержит `ContextStrategy.build()` и три реализации.
-Стратегия выбирает сообщения для API, Agent владеет историей, facts, checkpoint,
-ветками, extraction, HTTP-запросами, usage и persistence.
+```sh
+flutter run --dart-define-from-file=.env --dart-define=MCP_URL=http://127.0.0.1:3000/mcp
+```
 
-UI держит отдельный Agent и отдельный файл для каждого режима. При переключении
-возвращается собственный диалог стратегии; сообщения и facts не копируются из соседнего режима.
-Корзина очищает только выбранный эксперимент (для Branching — общий префикс и обе ветки).
+`.env` must contain `DEEPSEEK_API_KEY=your_key`. It is sent only to DeepSeek,
+never to the MCP server. The existing model default is `deepseek-v4-flash`;
+`--dart-define=DEEPSEEK_MODEL=...` can override it if needed for your account.
 
-| Режим | Что фактически отправляется в chat API |
-|---|---|
-| Sliding Window | Обычный system + последние **6** сообщений, **включая новый user** |
-| Sticky Facts | Обычный system + JSON актуальных facts в отдельном system-блоке + то же окно 6 |
-| Branching | Обычный system + неизменяемая история до checkpoint + только хвост активной ветки |
+### Other devices
 
-Sliding не использует facts, summary, extraction или скрытый старый контекст. Старые сообщения
-сохраняются только для UI, не для API. N считает отдельные сообщения, не пары/turns; окно
-может начинаться с assistant. Это ровно последние N, без неявного расширения окна.
+- Android emulator: `--dart-define=MCP_URL=http://10.0.2.2:3000/mcp`.
+  Local cleartext HTTP is enabled in the Android debug manifest.
+- Physical iPhone/Android: use the Mac's LAN IP, same Wi-Fi, allow local network
+  access on iOS. Start server with `MCP_HOST=0.0.0.0 MCP_ALLOWED_HOST=192.168.1.10 dart run server/task_server.dart`
+  (replace the example IP), and use `--dart-define=MCP_URL=http://192.168.1.10:3000/mcp`.
+- iOS simulator: `127.0.0.1` reaches the Mac. Local networking is declared in Info.plist.
 
-### Sticky Facts
+No MCP authentication, database, server installation or Inspector required.
+Dependencies are shared with the Flutter project. If checking out fresh, run
+`flutter pub get` before the server command.
 
-Память — `Map<String, String>`, сериализованная в JSON. После каждой новой user-реплики
-Agent отправляет отдельный extraction request: специальный system + `existing facts / new user message`.
-Старой истории и assistant-ответов в extraction нет. Запрос просит полную актуальную карту
-устойчивых параметров, а не пересказ диалога. Вопросы, болтовня и неподтверждённые варианты
-не должны становиться фактами.
+## Video/manual scenario
 
-Изменение заменяет значение того же ключа, отмена удаляет факт. Например, реальный extraction
-изменил `budget: 5000 EUR` на `budget: 7000 EUR`, а затем удалил push из `required_features`.
-Модель может группировать связанные параметры в одном поле, например список обязательных функций.
-JSON ограничен 32 строковыми полями; ключ до 80 символов, значение до 200. Необычные/невалидные
-ответы не применяются. Extraction возвращает JSON через `response_format: json_object`,
-лимит 1200 output tokens. [Официальная документация JSON Output](https://api-docs.deepseek.com/guides/json_mode/).
+1. Start server and app. Show URL and MCP disconnected.
+2. Press Connect. Show connected and Discovered: get_task_status.
+3. Ask `Какой статус задачи AI-101?`. Expect In Progress / Alex.
+4. Expand Last MCP Tool Call: name, taskId argument and actual MCP result.
+5. Ask `А что с AI-103?`. Expect Blocked / John; show updated proof.
+6. Optionally ask `Какой статус AI-999?`: not found, no invented status.
 
-При пустом/обрезанном/невалидном extraction chat не отправляется: показывается ошибка, прежняя карта
-сохраняется, можно повторить отправку. При успешном extraction и неуспешном chat повтор той же
-неотвеченной реплики не добавляет user второй раз и не повторяет уже выполненный extraction.
-Usage extraction учитывается отдельно, включая неудачные ответы, если API вернул usage.
+The Agent obtains the function schema from MCP discovery. DeepSeek chooses the
+function and JSON arguments; the app permits one get_task_status call only.
+The MCP result returns as a role=tool message with the matching tool_call_id;
+a second DeepSeek request generates the answer with tool_choice=none.
+No endless loop. Unknown IDs/tool errors have a grounded fallback response.
+Network/API failures are shown without exposing API keys.
 
-### Branching
-
-После завершённого обмена кнопка **Create checkpoint** создаёт неизменяемую глубокую копию
-общей истории и две отдельные mutable-коллекции хвостов A и B. Кнопки A/B выбирают хвост.
-Общий префикс заморожен вместе с message maps. Общего mutable списка продолжений нет.
-
-При переключении UI восстанавливает common + selected tail. В API не включается соседняя ветка,
-facts или summary. Один checkpoint на эксперимент; для нового нужно очистить Branching.
-Накопительные токены Branching считаются по всем реально выполненным запросам обеих веток;
-общий префикс при каждом запросе оплачивается снова в token usage. Это изоляция альтернатив,
-а не обещание экономии контекста.
-
-## Day 9 и persistence
-
-Day 10 всегда задаёт `AgentConfig.strategy`. В этом случае `_context()` делегирует только
-ContextStrategy, `_compress()` блокируется, Day 9 summary не восстанавливается и не передаётся.
-Старый путь без strategy остаётся для `tool/run_day9.dart`; [отчёт Day 9](docs/day9-notes.md) сохранён.
-
-В Application Support используются:
-
-- `day10-sliding.json` — история Sliding и chat usage;
-- `day10-facts.json` — история, facts, отметка обработанного user, chat/extraction usage;
-- `day10-branching.json` — common/checkpoint, независимые tails, active branch, usage;
-- `day10-selection.json` — выбранная стратегия.
-
-Файл `conversation.json` Day 7–9 не изменяется. Используется существующее атомарное JSON-хранилище
-через временный файл и rename; база данных и миграции не нужны. Последний response/time в карточках
-после restart не восстанавливается, но история, память, ветки и cumulative usage восстанавливаются.
-Как раньше, аварийное завершение непосредственно между HTTP-ответом и записью может потерять последние метрики.
-
-## Реальный эксперимент 12.09.2026
-
-Запуск: `dart run tool/run_day10.dart`. Это ручной live-сценарий, не automated test suite.
-Он использует временные файлы, не меняет чаты приложения. Все ответы получены от
-`deepseek-v4-flash`: `temperature=0`, `top_p=1`, chat `max_tokens=600`, thinking disabled.
-UI использует существующие значения по умолчанию (`temperature=0.7`, chat `max_tokens=1600`),
-поэтому при ручном повторении результаты могут отличаться.
-
-Sliding и Facts получили одинаковые **12 user prompts**. Ранние требования: Orion,
-бронирование переговорных, Flutter, iOS+Android, 5000 EUR, 30 сентября, offline,
-email/password, push. Бюджет затем изменён на 7000 EUR, push отменён. Добавлены фильтр
-по вместимости и предпочтение коротких понятных ошибок. Затем шли вопросы и болтовня;
-финал — итоговое ТЗ без повторения значений ранних фактов.
-
-| Метрика | Sliding | Sticky Facts |
-|---|---:|---:|
-| Финальный context/input | 249 | 381 |
-| Финальный response | 184 | 195 |
-| Cumulative chat input | 2356 | 3568 |
-| Cumulative chat output | 441 | 424 |
-| Cumulative chat total | **2797** | **3992** |
-| Extraction input | 0 | 4036 |
-| Extraction output | 0 | 993 |
-| Extraction total | 0 | **5029** |
-| Итог, включая service calls | **2797** | **9021** |
-
-Все цифры — из API usage; extraction выполнен 12 раз. Неизвестных usage в этом запуске нет.
-Денежная стоимость не выводится в UI Day 10 и не подменяется суммой токенов.
-
-**Sliding:** в финале название, назначение, технология, платформы, бюджет, срок, offline
-и авторизация стали «неизвестно». Он также ошибочно включил в требования обсуждённые варианты
-кнопок и определения label/placeholder. Маленький контекст не гарантирует качественное ТЗ.
-
-**Facts:** сохранил все перечисленные действующие ранние требования, бюджет **7000 EUR**,
-фильтрацию по вместимости и предпочтение текста ошибок. Отменённые push-уведомления
-не вернулись. Финальная карта содержит 7 полей; болтовня и вопросы её не раздули.
-Facts потратил примерно в 3,2 раза больше токенов суммарно; только extraction — 5029 токенов.
-
-### Реальные ветки
-
-От общего требования создан checkpoint. В A выбраны Firebase и кнопка показа пароля,
-в B — Supabase и ссылка восстановления пароля. После пересоздания Agent сначала выбрана A,
-затем B; обе получили один и тот же финальный вопрос.
-
-| Ветка | Input финального запроса | Output | Ответ |
-|---|---:|---:|---|
-| A | 270 | 20 | Firebase; кнопка показа пароля |
-| B | 274 | 22 | Supabase; ссылка восстановления пароля |
-
-Всего в Branching 7 chat calls: 1485 input + 166 output = **1651** токен;
-service calls = 0. Это более короткий сценарий, его сумму нельзя напрямую ранжировать
-рядом с 12-ходовыми Sliding/Facts.
-
-## Проверки
-
-- На каждом реальном ходе сравнен отправленный conversational payload с точным ожидаемым
-  recent-суффиксом либо common + active branch; посторонние старые messages отсутствуют.
-- Во все три временных хранилища заранее помещён Day 9 sentinel-summary. Ни одна стратегия
-  его не восстановила/отправила, summarization calls = 0.
-- Реальные карты facts показывают замену бюджета и удаление push; ранние значения остаются
-  в финальном JSON после выпадения оригинальных сообщений из окна.
-- Facts, история и cumulative usage восстановлены после пересоздания Agent на седьмом ходе.
-- Checkpoint, обе ветки и active branch восстановлены после restart. В финальном payload A
-  отсутствует Supabase, в payload B отсутствует Firebase. Ответы также соответствуют своим веткам.
-- Приложение собрано и запущено на iPhone 16e simulator. Через UI проверены selector,
-  переключение стратегий, debug JSON Facts и экран Branching; реальные API-диалоги и
-  переключение уже заполненных веток проверены через общий Agent ручным CLI-сценарием.
-- `flutter analyze` проходит. Новые automated tests не добавлялись, `flutter test` не запускался.
-
-Полный воспроизводимый сценарий: [tool/run_day10.dart](tool/run_day10.dart).
-Ответы, facts, chat payloads, extraction payloads и usage: [docs/day10-results.json](docs/day10-results.json).
-
-## Короткое видео
-
-1. Выбрать Sliding Window и отправить ранние требования. После нескольких тематических вопросов
-   (оригиналы должны выйти за последние 6 сообщений) запросить итоговое ТЗ. Показать пропуски и input.
-2. Выбрать Sticky Facts: это отдельный чистый диалог. Повторить тот же сценарий.
-   Раскрыть debug JSON: бюджет 5000 → 7000, push удалён. В конце показать сохранившиеся факты
-   и отдельно Chat / Extraction / Всего. Полные 12 реплик доступны в скрипте.
-3. Выбрать Branching, передать общие требования, дождаться ответа, нажать Create checkpoint.
-   В A выбрать Firebase, в B Supabase. Добавить отдельное требование к экрану входа в каждой ветке.
-4. Вернуться в A, спросить backend; переключиться в B и задать тот же вопрос.
-   Показать, что история на экране и ответы различаются. Перезапуск сохраняет checkpoint и активную ветку.
-5. Вывод: Sliding дешевле, но забывает; Facts сохраняет требования ценой extraction;
-   Branching изолирует альтернативные решения. Универсального победителя нет.
+Only static analysis is performed during implementation. Runtime verification
+is left to the user.
