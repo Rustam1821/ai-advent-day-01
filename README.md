@@ -1,74 +1,68 @@
-# Day 18 — server-side monitoring
+# Day 20 — multi-server MCP orchestration
 
-Existing `mcp_dart` SDK + Streamable HTTP + DeepSeek tool-calling flow.
-No new dependencies. Day 17 task records/get_task_status removed.
+Two separate Dart processes/endpoints using the existing mcp_dart SDK:
+- server/task_server.dart, port 3000: get_task_data, get_task_history. Owns mock data.
+- server/report_server.dart, port 3001: create_task_summary, save_report. No task dataset or server-to-server calls.
 
-## Run manually from the repository root
+lib/mcp_client_service.dart: McpServerRegistry owns two clients. Discovered tools
+retain serverId, name, description and schema. Routing looks up that owner, never
+broadcasts tool calls. Endpoints: TASK_MCP_URL and REPORT_MCP_URL.
 
-Terminal 1 (leave running):
+lib/agent.dart: DeepSeek sees the discovered descriptions/schemas and selects
+one next tool each turn (maximum 4 calls plus a final decision). No fixed report
+pipeline. A status request needs only get_task_data; history only get_task_history.
+A full saved report should select data → history → summary → save.
+Application guards require data before summary and summary before save, and reject
+mixed task IDs/repeated calls. Actual accumulated results are bound as summary/save
+arguments by the orchestrator, rather than trusting LLM copies of those results.
+Each result returns to DeepSeek for its next choice. Final Agent text is formatted
+from actual results. It never claims a file was saved without save_report success.
 
+UI trace retains chronological server/tool/input/output and the failed step.
+On failure flow stops immediately. Connection errors are separate per server;
+Task-only queries can run if Report is offline. Tool selection is model-driven
+and must be verified manually; no runtime validation was performed.
+
+## Manual launch — three terminals, all in project root
+
+Stop the older server on port 3000 with Ctrl+C first.
+
+1. Task MCP:
 ```sh
 dart run server/task_server.dart
 ```
-
-Terminal 2 (iOS simulator already open):
-
+2. Report MCP:
 ```sh
-flutter run --dart-define-from-file=.env --dart-define=MCP_URL=http://127.0.0.1:3000/mcp
+dart run server/report_server.dart
+```
+3. Flutter (iOS Simulator already open):
+```sh
+flutter run --dart-define-from-file=.env --dart-define=TASK_MCP_URL=http://127.0.0.1:3000/mcp --dart-define=REPORT_MCP_URL=http://127.0.0.1:3001/mcp
 ```
 
-`.env`: `DEEPSEEK_API_KEY=your_key`. The model and API are unchanged.
-For a fresh checkout, run `flutter pub get` before starting the server.
-Android emulator URL: `http://10.0.2.2:3000/mcp` (debug HTTP enabled).
-Physical phone: same Wi-Fi, Mac LAN IP in URL; start server with
-`MCP_HOST=0.0.0.0 MCP_ALLOWED_HOST=<MAC_LAN_IP> dart run server/task_server.dart`.
-Allow local networking on iOS. No Node, database or cloud setup needed.
+.env needs the existing DEEPSEEK_API_KEY. No new dependencies or provider.
+On fresh checkout run flutter pub get first. Android Emulator: use 10.0.2.2 for
+both URLs. Physical phone: use Mac LAN IP, start each server with
+MCP_HOST=0.0.0.0 MCP_ALLOWED_HOST=<MAC_LAN_IP>, same Wi-Fi and local-network permission.
+MCP_PORT optionally overrides each server's default port.
 
 ## Video / manual check
 
-1. Start both processes; press Connect in Flutter.
-2. Send: `Запусти мониторинг demo-monitor каждые 10 секунд.`
-3. Show Agent confirmation and Last MCP Tool Call: schedule_monitor, name,
-   intervalSeconds, persisted job. First execution occurs after the interval.
-4. In the Flutter terminal press `q` and close the app if still visible.
-   Leave the SERVER terminal open and the Mac awake for 30–40 seconds.
-   Server prints a timestamp/value after each committed scheduled execution.
-5. Run the Flutter command again, press Connect.
-6. Send: `Дай сводку по demo-monitor.`
-7. Show Agent summary and Last MCP Tool Call: get_monitor_summary, runs,
-   averageValue, latestValue, minValue/maxValue and timestamps.
-   Counts depend on actual elapsed time, not on client requests.
-8. To finish: `Останови мониторинг demo-monitor.` The stop tool preserves history.
+1. Connect; show Task Server connected and Report Server connected.
+2. Send: Подготовь полный отчёт по задаче AI-101 с историей и сохрани его.
+3. Expand MCP Orchestration: Task/get_task_data → Task/get_task_history →
+   Report/create_task_summary → Report/save_report. Show input/output transfer.
+4. Show Agent answer and saved filename. Open file if desired:
+```sh
+open -a TextEdit server/reports/report_AI-101.txt
+```
+5. Send: Какой сейчас статус AI-102?
+   Expect only Task/get_task_data, Done/Maria; no Report calls.
+6. Optional: Покажи историю AI-101. Expect only Task/get_task_history.
+7. Optional failure: Подготовь полный отчёт по AI-999 и сохрани его.
+   Expect failed get_task_data, Flow stopped, no dependent calls.
 
-Optional persistence proof: BEFORE stopping the job, Ctrl+C in server terminal,
-restart with the same command and data path, reconnect Flutter, ask for summary.
-Old runs remain; the next execution occurs one interval after server restart.
-Unknown name returns found=false. Before the first run, runs=0 and metrics=null.
-
-## Implementation
-
-- `server/task_server.dart`: registers only schedule_monitor(name, intervalSeconds),
-  get_monitor_summary(name), stop_monitor(name). All sessions share one store/scheduler.
-- `server/monitor_store.dart`: one 1-second timer checks enabled jobs' nextRunAt.
-  Actual runs generate the repeating deterministic sequence 68,72,75,70.
-  No runs are created when requesting summaries or for server downtime.
-- `server/data/monitors.json`: jobs and results in one atomically replaced JSON file.
-  Path defaults relative to the server script; override with MCP_DATA_FILE.
-  Run only one server process per data file (no cross-process locking).
-- Job: id, name, intervalSeconds, createdAt, lastRunAt, nextRunAt, enabled.
-  Result: jobId, timestamp (UTC), value.
-- A shared async queue serializes scheduler and tool disk operations. Each operation
-  reads persisted state; a run updates metadata and results in the same commit.
-- Summary computes count, first/latest, min/max, average and timestamps on server.
-- Startup restores jobs/results and reschedules enabled jobs from current time.
-  Missing file starts empty; corrupt JSON is preserved as .corrupt-TIMESTAMP and
-  replaced with empty storage, with a warning. Disk access failures disable scheduling
-  and produce tool errors rather than silently claiming persistence.
-- Repeated schedule for an active name returns the existing job unchanged.
-  Scheduling a stopped name resumes it with history; it does not reset results.
-- Flutter has no scheduler/polling and no metric dataset. Agent discovers schemas,
-  requests one MCP action, passes result to DeepSeek for a final response.
-
-For a clean repeat of the video, use a new monitor name, or stop the server and
-remove `server/data/monitors.json` (this deletes all demo history) before restarting.
-Static analysis only during implementation; runtime verification is manual.
+Reports remain confined to server/reports, safe AI-numeric filenames, symlink
+targets rejected. Same task overwrites its report. Old Day 19 fixed pipeline was
+replaced by bounded model-driven selection. No scheduler, tests or new packages.
+Only flutter analyze (including both servers) is run during implementation.

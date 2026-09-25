@@ -51,3 +51,6 @@ app.*.map.json
 
 # Day 18 server runtime data
 /server/data/
+
+# Day 19 generated reports
+/server/reports/

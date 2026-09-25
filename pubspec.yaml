@@ -1,5 +1,5 @@
 name: ai_advent_day_01
-description: "AI Advent Day 18: persistent background monitoring via MCP."
+description: "AI Advent Day 20: multi-server MCP orchestration."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

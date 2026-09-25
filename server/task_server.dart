@@ -1,67 +1,64 @@
 import 'dart:convert';
 import 'dart:io';
-
 import 'package:mcp_dart/mcp_dart.dart';
 
-import 'monitor_store.dart';
+const tasks = {
+  'AI-101': {'status': 'In Progress', 'assignee': 'Alex', 'priority': 'High'},
+  'AI-102': {'status': 'Done', 'assignee': 'Maria', 'priority': 'Medium'},
+  'AI-103': {'status': 'Blocked', 'assignee': 'John', 'priority': 'High'},
+};
 
-McpServer createServer(MonitorStore store) {
-  final server = McpServer(const Implementation(name: 'ai-advent-monitors', version: '1.0.0'));
-  const descriptions = {
-    'schedule_monitor': 'Create a persistent periodic mock health monitor. Existing active names are not duplicated or changed. Stopped names resume with their history. intervalSeconds must be 5..86400.',
-    'get_monitor_summary': 'Return server-computed statistics from persisted executions for a monitor name. Unknown names return found=false. Before the first run returns runs=0 and null statistics.',
-    'stop_monitor': 'Stop future executions of a named monitor, preserving its history.',
-  };
-  for (final entry in descriptions.entries) {
-    server.registerTool(
-      entry.key, description: entry.value,
+String taskId(dynamic value) {
+  if (value is! String || !RegExp(r'^AI-[0-9]{1,10}$').hasMatch(value)) {
+    throw const FormatException('taskId must match AI-123');
+  }
+  return value;
+}
+
+McpServer createServer() {
+  final server = McpServer(const Implementation(name: 'task-server', version: '1.0.0'));
+  void register(String name, String description, List<String> fields,
+      Future<Map<String, dynamic>> Function(Map<String, dynamic>) operation) {
+    server.registerTool(name, description: description,
       inputSchema: JsonSchema.object(
-        properties: {
-          'name': JsonSchema.string(description: 'Monitor name, e.g. demo-monitor'),
-          if (entry.key == 'schedule_monitor')
-            'intervalSeconds': JsonSchema.integer(description: 'Interval in seconds, from 5 to 86400'),
-        },
-        required: ['name', if (entry.key == 'schedule_monitor') 'intervalSeconds'],
+        properties: {for (final field in fields) field: JsonSchema.string()}, required: fields,
       ),
-      callback: (arguments, extra) async {
+      callback: (args, extra) async {
         try {
-          final data = await store.execute(entry.key, arguments);
+          final data = await operation(args);
           return CallToolResult(content: [TextContent(text: jsonEncode(data))], structuredContent: data);
+        } on FormatException catch (error) {
+          return CallToolResult(isError: true, content: [TextContent(text: error.message)]);
         } catch (_) {
-          final data = {'error': 'Операция не выполнена. Проверьте name, intervalSeconds (5..86400) и доступность JSON-хранилища.'};
-          return CallToolResult(isError: true,
-            content: [TextContent(text: jsonEncode(data))], structuredContent: data);
+          return CallToolResult(isError: true, content: [TextContent(text: 'Не удалось выполнить $name. Проверьте taskId.')]);
         }
       },
     );
   }
+  register('get_task_data', 'Get structured task data by taskId. Unknown IDs return an error.',
+    ['taskId'], (args) async {
+      final id = taskId(args['taskId']);
+      final task = tasks[id];
+      if (task == null) throw FormatException('Task $id not found');
+      return {'taskId': id, ...task};
+    });
+  register('get_task_history', 'Get task history only; use when the user requests history, including full reports.',
+    ['taskId'], (args) async {
+      final id = taskId(args['taskId']);
+      final task = tasks[id];
+      if (task == null) throw FormatException('Task $id not found');
+      return {'taskId': id, 'history': 'Created\nAssigned to ${task['assignee']}\nMoved to ${task['status']}'};
+    });
   return server;
 }
 
 Future<void> main() async {
   final host = Platform.environment['MCP_HOST'] ?? '127.0.0.1';
   final port = int.parse(Platform.environment['MCP_PORT'] ?? '3000');
-  // Default location is relative to this script, not the terminal working directory.
-  final file = Platform.environment['MCP_DATA_FILE'];
-  final store = MonitorStore(file == null
-      ? File.fromUri(Platform.script.resolve('data/monitors.json')) : File(file));
-  await store.initialize();
   final server = StreamableMcpServer(
-    serverFactory: (_) => createServer(store),
-    host: host, port: port, path: '/mcp',
+    serverFactory: (_) => createServer(), host: host, port: port, path: '/mcp',
     allowedHosts: {'localhost', '127.0.0.1', '10.0.2.2', ...?Platform.environment['MCP_ALLOWED_HOST']?.split(',')},
   );
   await server.start();
-  store.start(); // One scheduler for all sessions; client disconnect does not stop it.
-  stdout.writeln('Monitoring MCP: http://$host:$port/mcp\nStorage: ${store.file.absolute.path}');
-  var stopping = false;
-  Future<void> stop(ProcessSignal signal) async {
-    if (stopping) return;
-    stopping = true;
-    await store.close();
-    await server.stop();
-    exit(0);
-  }
-  ProcessSignal.sigint.watch().listen(stop);
-  ProcessSignal.sigterm.watch().listen(stop);
+  stdout.writeln('Task MCP: http://$host:$port/mcp');
 }
