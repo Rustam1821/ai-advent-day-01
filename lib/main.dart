@@ -1,9 +1,8 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-
-import 'agent.dart';
-import 'mcp_client_service.dart';
+import 'package:flutter/services.dart';
+import 'documents.dart';
+import 'embedding_service.dart';
+import 'indexing_service.dart';
 
 void main() => runApp(const MyApp());
 
@@ -11,107 +10,146 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'AI Advent — Day 20', debugShowCheckedModeBanner: false,
+    title: 'Day 21 · Document Indexing', debugShowCheckedModeBanner: false,
     theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4154B3)), useMaterial3: true),
-    home: const AgentPage(),
+    home: const IndexingPage(),
   );
 }
 
-class AgentPage extends StatefulWidget {
-  const AgentPage({super.key});
+class IndexingPage extends StatefulWidget {
+  const IndexingPage({super.key});
   @override
-  State<AgentPage> createState() => _AgentPageState();
+  State<IndexingPage> createState() => _IndexingPageState();
 }
 
-class _AgentPageState extends State<AgentPage> {
-  final _mcp = McpServerRegistry();
-  late final _agent = Agent(_mcp);
-  final _input = TextEditingController();
-  final List<({String user, String answer})> _turns = [];
-  bool _busy = false;
+class _IndexingPageState extends State<IndexingPage> {
+  final _service = IndexingService();
+  List<Document> _documents = [];
+  List<IndexResult> _results = [];
+  String _progress = 'Loading documents…';
   String? _error;
+  bool _busy = true;
+  int _words = 0;
+  final _selected = <String, int>{};
 
-  Future<void> _send() async {
-    final prompt = _input.text.trim();
-    if (_busy || prompt.isEmpty) return;
-    FocusScope.of(context).unfocus();
-    setState(() { _busy = true; _error = null; });
+  @override
+  void initState() { super.initState(); _load(); }
+  Future<void> _load() async {
     try {
-      final answer = await _agent.send(prompt, () { if (mounted) setState(() {}); });
+      final docs = await DocumentLoader().load();
       if (!mounted) return;
-      setState(() { _turns.add((user: prompt, answer: answer)); _input.clear(); });
+      setState(() {
+        _documents = docs;
+        _words = docs.fold(0, (sum, doc) => sum + RegExp(r'\S+').allMatches(doc.content).length);
+      });
+      final saved = await _service.restore();
+      if (!mounted) return;
+      setState(() {
+        _results = saved;
+        _progress = saved.isEmpty ? 'Ready' : 'Сохранённые индексы прочитаны с диска';
+      });
     } catch (error) {
-      if (mounted) setState(() => _error = 'Не удалось получить ответ: $error');
+      if (mounted) setState(() => _error = 'Ошибка загрузки: $error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _build() async {
+    setState(() { _busy = true; _error = null; _progress = 'Loading documents…'; });
+    try {
+      // One immutable corpus snapshot is used for both strategies.
+      final docs = await DocumentLoader().load();
+      final results = await _service.build(docs, (message) {
+        if (mounted) setState(() => _progress = message);
+      });
+      if (mounted) {
+        setState(() {
+          _documents = docs;
+          _results = results;
+          _selected.clear();
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _error = 'Индексация остановлена: $error';
+          _progress = 'Failed · прежние завершённые индексы сохранены';
+        });
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
   @override
-  void dispose() {
-    _agent.dispose(); _mcp.dispose(); _input.dispose();
-    super.dispose();
+  void dispose() { _service.dispose(); super.dispose(); }
+
+  Widget _result(IndexResult result) {
+    final strategy = result.data['strategy'] as String;
+    final index = (_selected[strategy] ?? 0).clamp(0, result.chunks.length - 1);
+    final chunk = result.chunks[index] as Map;
+    final text = chunk['text'] as String;
+    return Card(child: Padding(padding: const EdgeInsets.all(12), child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(strategy == 'fixed' ? 'FIXED SIZE' : 'STRUCTURE AWARE', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        SelectableText('Saved: ${result.path}'),
+        TextButton.icon(
+          onPressed: () => Clipboard.setData(ClipboardData(text: result.path)),
+          icon: const Icon(Icons.copy, size: 16), label: const Text('Копировать путь'),
+        ),
+        Row(children: [
+          IconButton(onPressed: index > 0 ? () => setState(() => _selected[strategy] = index - 1) : null,
+            icon: const Icon(Icons.chevron_left)),
+          Text('Chunk ${index + 1} / ${result.chunks.length}'),
+          IconButton(onPressed: index + 1 < result.chunks.length ? () => setState(() => _selected[strategy] = index + 1) : null,
+            icon: const Icon(Icons.chevron_right)),
+        ]),
+        SelectableText('ID: ${chunk['chunk_id']}\nFile: ${chunk['file']}\n'
+            'Section: ${chunk['section'] ?? 'unknown'}\nLength: ${text.length}\n'
+            'Embedding dimensions: ${(chunk['embedding'] as List).length}'),
+        const SizedBox(height: 8),
+        SelectableText(text.length > 700 ? '${text.substring(0, 700)}…' : text),
+      ],
+    )));
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Day 20 · Agent + MCP')),
+    appBar: AppBar(title: const Text('Day 21 · Document Indexing')),
     body: SafeArea(child: Center(child: ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 800),
-      child: ListenableBuilder(listenable: _mcp, builder: (context, _) {
-        final connected = _mcp.connected;
-        final connecting = _mcp.connecting;
-        return Column(children: [
-          Padding(padding: const EdgeInsets.all(12), child: Row(children: [
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              for (final server in _mcp.servers) ...[
-                Text('${server.serverId}: ${server.status.name}'),
-                Text(server.endpoint.toString(), style: Theme.of(context).textTheme.bodySmall),
-              ],
-            ])),
-            OutlinedButton(onPressed: _busy || connecting || connected ? null : _mcp.connect,
-              child: const Text('Connect')),
-          ])),
-          if (_busy || connecting) const LinearProgressIndicator(),
-          if (_error != null || _mcp.error != null)
-            Padding(padding: const EdgeInsets.all(8), child: Text(_error ?? _mcp.error!,
-              style: TextStyle(color: Theme.of(context).colorScheme.error))),
-          Expanded(child: ListView(
-            reverse: true, padding: const EdgeInsets.all(12),
-            children: [
-              if (_agent.steps.isNotEmpty)
-                Card(child: ExpansionTile(title: const Text('MCP Orchestration'),
-                  subtitle: Text(_agent.flowStatus),
-                  children: [for (final (index, step) in _agent.steps.indexed)
-                    Padding(padding: const EdgeInsets.all(12), child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('${index + 1}. ${step.serverId} → ${step.name} · ${step.status}',
-                          style: const TextStyle(fontWeight: FontWeight.bold)),
-                        SelectableText('Input: ${jsonEncode(step.input)}'),
-                        if (step.output != null) SelectableText('Output: ${jsonEncode(step.output)}'),
-                        if (step.error != null) SelectableText('Error: ${step.error}'),
-                      ],
-                    )),
-                  ],
-                )),
-              for (final turn in _turns.reversed)
-                Card(child: Padding(padding: const EdgeInsets.all(12), child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [Text('Вы: ${turn.user}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8), SelectableText('Agent: ${turn.answer}')],
-                ))),
-              if (_turns.isEmpty) const Text('Подключите MCP: Подготовь полный отчёт по задаче AI-101 с историей и сохрани его.'),
-            ],
+      constraints: const BoxConstraints(maxWidth: 850),
+      child: ListView(padding: const EdgeInsets.all(16), children: [
+        Text('Documents: ${_documents.length} · Words: $_words\n'
+            'Estimated pages: ${(_words / 500).toStringAsFixed(1)} (500 words/page)'),
+        const Text('Corpus: The Rust Programming Language · MIT\n'
+            'Fixed: 1200 chars / overlap 150\nStructure: headings + paragraphs, max 1200 chars'),
+        const SizedBox(height: 8),
+        const Text('Embeddings: Ollama / embeddinggemma · 768 dimensions'),
+        const SelectableText(EmbeddingService.baseUrl),
+        const SizedBox(height: 12),
+        FilledButton(onPressed: _busy || _documents.isEmpty ? null : _build,
+          child: const Text('Build & Compare Both')),
+        if (_documents.isEmpty && !_busy)
+          TextButton(onPressed: () { setState(() { _busy = true; _error = null; }); _load(); },
+              child: const Text('Повторить загрузку документов')),
+        if (_busy) const LinearProgressIndicator(),
+        Text(_progress),
+        if (_error != null) Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+        if (_results.length == 2) ...[
+          const SizedBox(height: 16),
+          const Text('Сравнение одного corpus · длина в символах UTF-16'),
+          SingleChildScrollView(scrollDirection: Axis.horizontal, child: DataTable(
+            columns: const [DataColumn(label: Text('Metric')), DataColumn(label: Text('Fixed')), DataColumn(label: Text('Structure'))],
+            rows: [for (final key in ['documents', 'chunks', 'averageLength', 'minimumLength', 'maximumLength', 'sectionsPreserved'])
+              DataRow(cells: [DataCell(Text(key)), for (final result in _results)
+                DataCell(Text(result.stats[key] is double ? (result.stats[key] as double).toStringAsFixed(1) : '${result.stats[key]}'))])],
           )),
-          Padding(padding: const EdgeInsets.all(12), child: Row(children: [
-            Expanded(child: TextField(controller: _input, enabled: !_busy,
-              minLines: 1, maxLines: 3, decoration: const InputDecoration(labelText: 'Сообщение'))),
-            const SizedBox(width: 8),
-            FilledButton(onPressed: _busy || connecting || !_mcp.available ? null : _send, child: const Text('Отправить')),
-          ])),
-        ]);
-      }),
+          for (final result in _results) _result(result),
+        ],
+      ]),
     ))),
   );
 }

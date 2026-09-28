@@ -1,0 +1,9 @@
+The Rust Programming Language, rust-lang/book.
+Copyright (c) 2010 The Rust Project Developers.
+Distributed under the MIT license; see LICENSE-MIT.txt.
+Source revision and exact document list: manifest.json.
+Selected chapters: ownership, structs, enums, collections.
+mdBook include directives were expanded into complete referenced source files.
+This may include more code than the original excerpt. Remote illustrations and
+links remain references; no HTML book build is required for indexing text.
+License, attribution and manifest are not part of the indexed corpus.
