@@ -13,10 +13,13 @@
     "ch06-03-if-let.md",
     "ch08-01-vectors.md",
     "ch08-02-strings.md",
-    "ch08-03-hash-maps.md"
+    "ch08-03-hash-maps.md",
+    "kedr-runtime.md",
+    "kedr-support.md"
   ],
-  "wordCount": 31559,
+  "wordCount": 31824,
   "wordsPerPage": 500,
-  "estimatedPages": 63.118,
-  "modifications": "mdBook include directives expanded to complete referenced source files; surrounding Markdown retained."
+  "estimatedPages": 63.648,
+  "modifications": "mdBook include directives expanded to complete referenced source files; surrounding Markdown retained.",
+  "localAdditions": "kedr-runtime.md and kedr-support.md: original fictional Day 22 specifications, not Rust Book content."
 }

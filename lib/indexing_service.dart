@@ -24,15 +24,15 @@ class IndexingService {
     await temp.rename(file.path);
   }
 
-  Future<List<IndexResult>> restore() async {
+  Future<List<IndexResult>> restore({String? strategy}) async {
     final root = await _directory();
     final pointer = File('${root.path}/current.json');
     if (!await pointer.exists()) return [];
     final run = (jsonDecode(await pointer.readAsString()) as Map)['run'] as String;
     if (!RegExp(r'^run_[0-9]+$').hasMatch(run)) throw const FormatException('Invalid index location');
     final results = <IndexResult>[];
-    for (final strategy in ['fixed', 'structure']) {
-      final file = File('${root.path}/$run/index_$strategy.json');
+    for (final selected in strategy == null ? ['fixed', 'structure'] : [strategy]) {
+      final file = File('${root.path}/$run/index_$selected.json');
       results.add(IndexResult(Map<String, dynamic>.from(jsonDecode(await file.readAsString()) as Map), file.path));
     }
     return results;

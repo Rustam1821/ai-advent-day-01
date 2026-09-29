@@ -1,5 +1,5 @@
 name: ai_advent_day_01
-description: "AI Advent Day 21: document indexing and chunking comparison."
+description: "AI Advent Day 22: local RAG and baseline comparison."
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -20,3 +20,4 @@ flutter:
   uses-material-design: true
   assets:
     - documents/
+    - evaluation/
