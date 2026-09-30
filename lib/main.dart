@@ -11,7 +11,7 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'Day 22 — RAG', debugShowCheckedModeBanner: false,
+    title: 'Day 23 — Improved RAG', debugShowCheckedModeBanner: false,
     theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4154B3)), useMaterial3: true),
     home: const RagPage(),
   );
@@ -30,9 +30,8 @@ class _RagPageState extends State<RagPage> {
   int? _selected;
   bool _busy = true;
   String _indexStatus = 'Loading index…', _progress = '';
-  String? _offError, _onError;
-  RagResult? _off, _on;
-  List<RetrievedChunk> _hits = [];
+  String? _baseError, _improvedError;
+  RagResult? _base, _improved;
 
   @override
   void initState() { super.initState(); _initialize(); }
@@ -55,7 +54,7 @@ class _RagPageState extends State<RagPage> {
       if (mounted) setState(() => _indexStatus = '$error');
     }
   }
-  void _clearResults() { _off = _on = null; _offError = _onError = null; _hits = []; }
+  void _clearResults() { _base = _improved = null; _baseError = _improvedError = null; }
   Future<void> _rebuild() async {
     setState(() { _busy = true; _clearResults(); });
     try {
@@ -68,34 +67,67 @@ class _RagPageState extends State<RagPage> {
     }
   }
   void _updateProgress(String text) { if (mounted) setState(() => _progress = text); }
-  Future<void> _ask(List<bool> modes) async {
+  Future<void> _ask(List<RagMode> modes) async {
     final question = _question.text.trim();
     if (_busy || question.isEmpty) return;
     FocusScope.of(context).unfocus();
     setState(() {
       _busy = true;
       for (final mode in modes) {
-        if (mode) { _on = null; _onError = null; _hits = []; }
-        else { _off = null; _offError = null; }
+        if (mode == RagMode.improved) { _improved = null; _improvedError = null; }
+        else { _base = null; _baseError = null; }
       }
     });
     for (final mode in modes) {
-      if (!mounted) break;
+      if (!mounted) { break; }
       try {
-        final result = await _rag.answer(question, mode, _updateProgress, (hits) {
-          if (mounted) setState(() => _hits = hits);
+        final result = await _rag.answer(question, mode, _updateProgress, (partial) {
+          if (mounted) {
+            setState(() {
+              if (mode == RagMode.improved) { _improved = partial; } else { _base = partial; }
+            });
+          }
         });
-        if (mounted) setState(() { if (mode) { _on = result; } else { _off = result; } });
+        if (mounted) setState(() { if (mode == RagMode.improved) { _improved = result; } else { _base = result; } });
       } catch (error) {
-        if (mounted) setState(() { if (mode) { _onError = 'RAG failed: $error'; } else { _offError = 'LLM failed: $error'; } });
+        if (mounted) setState(() { if (mode == RagMode.improved) { _improvedError = 'RAG failed: $error'; } else { _baseError = 'BASE failed: $error'; } });
       }
     }
     if (mounted) setState(() { _busy = false; _progress = 'Запрос завершён'; });
   }
+  Widget _chunks(String title, List<RetrievedChunk> hits) => ExpansionTile(
+    title: Text('$title · ${hits.length}'),
+    children: [for (final (i, hit) in hits.indexed) Padding(
+      padding: const EdgeInsets.all(8),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        SelectableText('#${i + 1} · ${hit.chunk.metadata['file']}\n'
+          'Section: ${hit.chunk.metadata['section']} · Score: ${hit.score.toStringAsFixed(3)}\n'
+          'ID: ${hit.chunk.metadata['chunk_id']}\nSource: ${hit.chunk.metadata['source']}'),
+        Text(hit.chunk.metadata['text'] as String, maxLines: 4, overflow: TextOverflow.ellipsis),
+      ]),
+    )],
+  );
   Widget _answer(String title, RagResult? result, String? error) => Card(child: Padding(
     padding: const EdgeInsets.all(12), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-      if (result != null) ...[Text('Вопрос: ${result.question}'), const SizedBox(height: 8), SelectableText(result.answer)],
+      if (result != null) ...[
+        SelectableText('Original query: ${result.question}'),
+        if (result.mode == RagMode.improved) ...[
+          SelectableText('Rewritten query: ${result.rewrittenQuery ?? "ещё не получен"}'),
+          const Text('Similarity relevance filter · Threshold: ${RetrievalConfig.similarityThreshold}'),
+          if (result.candidates.isNotEmpty) ...[
+            Text('Candidates: ${result.candidates.length} / max ${RetrievalConfig.topKBefore} · '
+              'Passed threshold: ${result.passedThreshold} · '
+              'Selected for LLM: ${result.retrieved.length} / max ${RetrievalConfig.topKAfter}'),
+            _chunks('BEFORE FILTER', result.candidates),
+            _chunks('AFTER FILTER', result.retrieved),
+          ],
+        ] else if (result.candidates.isNotEmpty) ...[
+          Text('Retrieved / selected for LLM: ${result.retrieved.length}'),
+          _chunks('BASE retrieved chunks', result.retrieved),
+        ],
+        if (result.answer != null) SelectableText(result.answer!),
+      ],
       if (error != null) Text(error, style: TextStyle(color: Theme.of(context).colorScheme.error)),
       if (result == null && error == null) const Text('Ещё не выполнено'),
     ]),
@@ -104,11 +136,11 @@ class _RagPageState extends State<RagPage> {
   void dispose() { _question.dispose(); _rag.dispose(); _indexing.dispose(); super.dispose(); }
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Day 22 — RAG')),
+    appBar: AppBar(title: const Text('Day 23 — Improved RAG')),
     body: SafeArea(child: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 850),
       child: ListView(padding: const EdgeInsets.all(12), children: [
         ExpansionTile(title: Text(_indexStatus), children: [
-          const Text('Day 21 · Structure Aware · embeddinggemma 768 · Top-K = 3'),
+          const Text('Day 21 · Structure Aware · embeddinggemma 768'),
           if (_repository.path != null) SelectableText(_repository.path!),
           OutlinedButton(onPressed: _busy ? null : _rebuild, child: const Text('Build/Rebuild Index')),
           const Text('Перестраивает оба индекса Day 21. Для retrieval используется только Structure.'),
@@ -136,24 +168,14 @@ class _RagPageState extends State<RagPage> {
           decoration: const InputDecoration(labelText: 'Question'),
           onChanged: (_) => setState(() { _selected = null; _clearResults(); })),
         Wrap(spacing: 8, children: [
-          OutlinedButton(onPressed: _busy ? null : () => _ask([false]), child: const Text('Without RAG')),
-          OutlinedButton(onPressed: _busy ? null : () => _ask([true]), child: const Text('With RAG')),
-          FilledButton(onPressed: _busy ? null : () => _ask([false, true]), child: const Text('Compare Both')),
+          OutlinedButton(onPressed: _busy ? null : () => _ask([RagMode.base]), child: const Text('Run BASE')),
+          OutlinedButton(onPressed: _busy ? null : () => _ask([RagMode.improved]), child: const Text('Run IMPROVED')),
+          FilledButton(onPressed: _busy ? null : () => _ask([RagMode.base, RagMode.improved]), child: const Text('Compare BASE vs IMPROVED')),
         ]),
         if (_busy) const LinearProgressIndicator(),
         Text(_progress),
-        _answer('WITHOUT RAG', _off, _offError),
-        _answer('WITH RAG', _on, _onError),
-        if (_hits.isNotEmpty) ExpansionTile(title: Text('Retrieved Context · ${_hits.length} sources'), children: [
-          const Text('Источники, переданные модели; это не проверка цитирования.'),
-          for (final (i, hit) in _hits.indexed) Padding(padding: const EdgeInsets.all(12),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              SelectableText('#${i+1} · ${hit.chunk.metadata['file']}\n'
-                'Section: ${hit.chunk.metadata['section']}\nScore: ${hit.score.toStringAsFixed(3)}\n'
-                'ID: ${hit.chunk.metadata['chunk_id']}\nSource: ${hit.chunk.metadata['source']}'),
-              SelectableText(hit.chunk.metadata['text'] as String),
-            ])),
-        ]),
+        _answer('BASE RAG', _base, _baseError),
+        _answer('IMPROVED RAG', _improved, _improvedError),
       ]),
     ))),
   );

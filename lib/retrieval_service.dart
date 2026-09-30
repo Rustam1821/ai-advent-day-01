@@ -61,7 +61,6 @@ class IndexRepository {
 }
 
 class RetrievalService {
-  static const topK = 3;
   double cosine(List<double> a, List<double> b) {
     if (a.length != b.length || a.isEmpty) throw StateError('Embedding dimensions mismatch.');
     double dot = 0, aa = 0, bb = 0;
@@ -72,10 +71,23 @@ class RetrievalService {
     if (aa == 0 || bb == 0) throw StateError('Zero vector.');
     return (dot / (sqrt(aa) * sqrt(bb))).clamp(-1.0, 1.0);
   }
-  List<RetrievedChunk> retrieve(List<double> query, List<IndexedChunk> chunks) {
+  List<RetrievedChunk> retrieve(List<double> query, List<IndexedChunk> chunks, {required int topK}) {
     final ranked = chunks.map((c) => RetrievedChunk(c, cosine(query, c.vector))).toList()
       ..sort((a,b) { final score = b.score.compareTo(a.score); return score != 0 ? score : (a.chunk.metadata['chunk_id'] as String).compareTo(b.chunk.metadata['chunk_id'] as String); });
     if (ranked.isEmpty) throw StateError('Нет пригодных chunks для retrieval.');
     return ranked.take(topK).toList();
   }
+}
+
+// Initial threshold, not calibrated against runtime scores.
+class RetrievalConfig {
+  static const baseTopK = 3;
+  static const topKBefore = 8;
+  static const topKAfter = 3;
+  static const similarityThreshold = 0.60;
+}
+
+class RelevanceFilter {
+  List<RetrievedChunk> apply(List<RetrievedChunk> candidates) => candidates
+      .where((hit) => hit.score >= RetrievalConfig.similarityThreshold).toList();
 }

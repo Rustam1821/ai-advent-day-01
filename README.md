@@ -1,73 +1,83 @@
-# Day 22 — first RAG
+# Day 23 — Query Rewrite + Similarity relevance filter
 
-Reuses Day 21 corpus, chunkers, embeddings and disk format. Main index is
-`day21/run_TIMESTAMP/index_structure.json`, located through `current.json`
-in the app Documents directory. Heading metadata makes this index easy to inspect.
+Reuses Day 21–22 Structure Aware index, corpus, metadata, disk loading and
+Ollama embeddinggemma (768 dimensions). No corpus/model changes or required
+rebuild if the Day 22 index is already available.
 
-- IndexRepository (`lib/retrieval_service.dart`) loads only Structure from disk,
-  validates metadata/vectors/model/dimensions and corpus hash. Missing/stale/corrupt
-  indexes produce a visible error; use Build/Rebuild Index.
-- EmbeddingService unchanged: Ollama embeddinggemma, 768 dimensions, /api/embed.
-  Query uses the same raw-text embedding method as the indexed documents.
-- RetrievalService: cosine = dot/(norm*norm), all chunks scored, descending sort,
-  fixed Top-K=3; no keyword rules, reranker, threshold or vector database.
-- RagService: OFF → question → DeepSeek only. ON → load index → query embedding
-  → Top-K → sources JSON + original question → same DeepSeek model.
-- LlmService uses identical temperature=0.2/max_tokens=1000/thinking disabled in
-  both modes. Requests have no chat history; earlier RAG results/expected answers
-  never leak into the baseline. Grounding instructions apply to ON only.
-- Retrieved metadata/text/scores appear next to answers. These are supplied
-  sources, not a claim that each source was cited or used by the model.
-- RAG failures are visible, never silently replaced by a baseline answer.
+## Pipelines
 
-## Corpus and controls
+- BASE: original question → embedding → cosine similarity → Top-3 → context → LLM.
+  No rewrite or threshold.
+- IMPROVED: original question → one LLM query rewrite → rewritten-query embedding
+  → cosine similarity Top-8 → score >= 0.60 → at most 3 chunks → context → LLM.
+- Constants live in RetrievalConfig, filter in RelevanceFilter
+  (`lib/retrieval_service.dart`). Candidates retain descending similarity order.
+  The 0.60 threshold is an initial moderately selective setting, not calibrated
+  against runtime scores. It does not guarantee better answers; inspect actual
+  scores and sources manually. This is a threshold filter, not an ML reranker.
+- Fewer than three passing chunks are used as-is. Zero passing chunks produce
+  an explicit insufficient-context response without final LLM or fallback.
+- QueryRewriteService (`lib/rag_service.dart`) uses the existing DeepSeek model.
+  It asks for one standalone search query, preserving meaning/names/constraints,
+  removing conversational filler, without answering or inventing missing context.
+  There is no chat history. Failed rewrite is shown, never silently bypassed.
+- Final generation in both modes uses the original question and sources JSON,
+  identical grounding instructions/model/temperature=0.2/max_tokens=1000.
+  Rewritten query is used only for retrieval. No prior answers or expected facts
+  are sent to either generation/rewrite request.
+- Each BASE run uses one embedding + one final LLM call. IMPROVED adds one rewrite
+  LLM call (and skips final generation if the filter is empty).
 
-Original Rust Book documents retained. Added two original, explicitly fictional
-internal specifications: documents/kedr-runtime.md and kedr-support.md.
-**Rebuild is required once for Day 22**; old Day 21 corpus hashes are rejected.
-The current manifest lists all 14 documents. New docs are not Rust Book content.
+## UI and questions
 
-`evaluation/questions.json` holds 10 questions with predefined expectedFacts and
-expectedSources (not indexed and never included in prompts). Eight direct facts
-from different sections; two cross-document questions. No automatic judge or
-batch evaluation. Dropdown selects one question; Compare Both executes only it.
+Run BASE / Run IMPROVED preserve answers for the same question. Editing the
+question clears results. Compare BASE vs IMPROVED runs just the selected question,
+sequentially. Each result shows its original query, sources and scores. IMPROVED
+also shows rewritten query, BEFORE FILTER candidates, threshold, passed count,
+AFTER FILTER selection and answer. Expand source lists for metadata/text previews.
+Selections are shown even if final generation fails; errors remain explicit.
 
-## Setup / run manually
+The same ten questions in `evaluation/questions.json` retain predefined expected
+facts/sources. Question 1 is now conversational (Kedr event retry count and delay).
+It is a useful starting point for both rewrite and filtering demonstration;
+actual improvements/chunk counts must be checked manually, not presumed.
+Question 9 still combines backup interval and log retention across two documents.
 
-Keep Ollama open on Mac; if not installed use https://ollama.com/download/mac.
-Download model once if not already available:
+## Manual launch
+
+Keep Ollama running on Mac. If the existing model is missing, download it once:
 
 ```sh
 ollama pull embeddinggemma
 ```
 
-`.env` must contain `DEEPSEEK_API_KEY=your_key`. Do not commit this file.
-Default LLM remains deepseek-v4-flash; optional DEEPSEEK_MODEL override.
-From project root, with iOS Simulator open:
+Keep `DEEPSEEK_API_KEY` in the existing ignored `.env` file. Optional
+`DEEPSEEK_MODEL` overrides the existing default `deepseek-v4-flash`.
+From project root, with your iOS Simulator open:
 
 ```sh
 flutter run --dart-define-from-file=.env --dart-define=EMBEDDING_URL=http://127.0.0.1:11434
 ```
 
-Android Emulator: replace the embedding URL host with 10.0.2.2.
-No MCP servers or new packages required. Ollama is needed for indexing and RAG ON;
-RAG OFF only needs DeepSeek. Index loading at screen startup does not add context
-to OFF requests or perform embedding/retrieval.
+Android Emulator: use `http://10.0.2.2:11434` instead. Both modes need Ollama and
+DeepSeek. No MCP, new dependencies, model downloads beyond the existing embedding
+model, or separate servers added.
 
-## Manual check / video
+## Manual check / short video
 
-1. Expand the index status, press Build/Rebuild Index, wait until saved. This is
-   the original Day 21 build for both strategies; only Structure is retrieved.
-2. Select question 1 about Kedr retries. Show expected 7 attempts/13 seconds and
-   expected source. These expectations remain UI-only.
-3. Press Without RAG. Show the baseline (it may say it does not know).
-4. Without changing the question, press With RAG.
-5. Expand Retrieved Context: file/section/score/text for three actual retrieved chunks.
-6. Show the two answers and compare with the predefined facts. Baseline may guess;
-   retrieval/model output is not guaranteed and must be inspected manually.
-7. Open the dropdown to show all 10 prepared questions. Optionally choose question 9
-   (backup interval + log retention) and Compare Both; no automatic run of all questions.
+1. Open Day 23 — Improved RAG. Confirm Structure index ready. Only if missing/stale,
+   expand the index status at the top → Build/Rebuild Index → wait until ready.
+   The existing builder still saves both strategies; retrieval uses Structure.
+2. Select control question 1. Show its question, expected 7 retries/13 seconds,
+   and expected source kedr-runtime.md / Повторные попытки.
+3. Press Run BASE. Show answer; expand BASE retrieved chunks for files, sections,
+   scores and previews. Collapse it afterwards to keep the answer visible.
+4. Without editing the question, press Run IMPROVED. Show original and rewritten
+   queries. Expand BEFORE FILTER to show up to 8 candidates and their scores.
+5. Collapse BEFORE FILTER; show threshold 0.60 and passed count. Expand AFTER FILTER:
+   only passing chunks, at most 3. It can legitimately contain fewer or zero.
+6. Collapse source lists and compare BASE and IMPROVED answers with expected facts.
+   Similar answers are possible; the visible pipeline differences are the proof.
 
-Day 21 comparison/chunk browser removed from active UI; indexing remains available.
-No added dependencies. Only flutter analyze is run during implementation;
-no API calls, index builds, app runs or automated tests.
+Only flutter analyze is permitted during implementation. No tests, application
+launch, index rebuilding or real API calls are performed by the coding agent.
