@@ -1,83 +1,83 @@
-# Day 23 — Query Rewrite + Similarity relevance filter
+# Day 24 — Grounded RAG
 
-Reuses Day 21–22 Structure Aware index, corpus, metadata, disk loading and
-Ollama embeddinggemma (768 dimensions). No corpus/model changes or required
-rebuild if the Day 22 index is already available.
+Reuses Day 23: Structure Aware disk index, corpus, Ollama embeddinggemma 768,
+query rewrite, cosine Top-8, threshold 0.60, at most 3 filtered chunks.
+No corpus/model changes, dependencies or required index rebuild. BASE comparison
+removed. Retrieval details are collapsed; answers, verified sources and quotes
+are the main UI.
 
-## Pipelines
+## Generation and verification
 
-- BASE: original question → embedding → cosine similarity → Top-3 → context → LLM.
-  No rewrite or threshold.
-- IMPROVED: original question → one LLM query rewrite → rewritten-query embedding
-  → cosine similarity Top-8 → score >= 0.60 → at most 3 chunks → context → LLM.
-- Constants live in RetrievalConfig, filter in RelevanceFilter
-  (`lib/retrieval_service.dart`). Candidates retain descending similarity order.
-  The 0.60 threshold is an initial moderately selective setting, not calibrated
-  against runtime scores. It does not guarantee better answers; inspect actual
-  scores and sources manually. This is a threshold filter, not an ML reranker.
-- Fewer than three passing chunks are used as-is. Zero passing chunks produce
-  an explicit insufficient-context response without final LLM or fallback.
-- QueryRewriteService (`lib/rag_service.dart`) uses the existing DeepSeek model.
-  It asks for one standalone search query, preserving meaning/names/constraints,
-  removing conversational filler, without answering or inventing missing context.
-  There is no chat history. Failed rewrite is shown, never silently bypassed.
-- Final generation in both modes uses the original question and sources JSON,
-  identical grounding instructions/model/temperature=0.2/max_tokens=1000.
-  Rewritten query is used only for retrieval. No prior answers or expected facts
-  are sent to either generation/rewrite request.
-- Each BASE run uses one embedding + one final LLM call. IMPROVED adds one rewrite
-  LLM call (and skips final generation if the filter is empty).
+The existing DeepSeek generation uses a strict JSON prompt with defensive parsing:
 
-## UI and questions
-
-Run BASE / Run IMPROVED preserve answers for the same question. Editing the
-question clears results. Compare BASE vs IMPROVED runs just the selected question,
-sequentially. Each result shows its original query, sources and scores. IMPROVED
-also shows rewritten query, BEFORE FILTER candidates, threshold, passed count,
-AFTER FILTER selection and answer. Expand source lists for metadata/text previews.
-Selections are shown even if final generation fails; errors remain explicit.
-
-The same ten questions in `evaluation/questions.json` retain predefined expected
-facts/sources. Question 1 is now conversational (Kedr event retry count and delay).
-It is a useful starting point for both rewrite and filtering demonstration;
-actual improvements/chunk counts must be checked manually, not presumed.
-Question 9 still combines backup interval and log retention across two documents.
-
-## Manual launch
-
-Keep Ollama running on Mac. If the existing model is missing, download it once:
-
-```sh
-ollama pull embeddinggemma
+```json
+{"answer":"...","isInsufficientContext":false,"clarificationRequest":null,
+ "citations":[{"chunkId":"...","source":"documents/...","section":"...","quote":"..."}]}
 ```
 
-Keep `DEEPSEEK_API_KEY` in the existing ignored `.env` file. Optional
-`DEEPSEEK_MODEL` overrides the existing default `deepseek-v4-flash`.
-From project root, with your iOS Simulator open:
+GroundedAnswer contains answer, citations, isInsufficientContext and optional
+clarificationRequest. Citation contains source, nullable section, chunkId, quote.
+Only filtered chunks are sent, with explicit chunkId/source/section/text fields.
+Prompt requires context-only facts and short exact supporting quotes, forbids
+invented sources/knowledge and treats documents as untrusted data, not commands.
+Answer and citations are generated in one request, without repair or judge calls.
+
+GroundingValidator (`lib/grounded_answer.dart`) checks required fields, at least
+one citation for factual answers, exact chunk ID/source/section against the sent
+context, and quote substring after trim and whitespace collapse (including line
+breaks). Duplicate quotes per chunk are removed. Any invalid citation or malformed
+JSON rejects the entire answer with a debug reason; unverified answer text is hidden.
+Technical validation proves quote existence, not semantic support of the answer.
+The user marks Answer supported by quotes: Yes / No after reading the answer.
+
+Zero chunks after filtering produces a deterministic refusal and skips final LLM:
+“Я не знаю ответа на основании доступной базы знаний.”
+“Пожалуйста, уточните вопрос или укажите компонент/проект.”
+Citations are empty. Rewrite and embedding still run. If filtered context exists
+but does not answer the question, the LLM can also abstain; its refusal is replaced
+with the same safe text. Retrieval details distinguish whether final LLM was requested.
+
+## Launch manually
+
+Keep the existing Ollama running with embeddinggemma installed. Existing `.env`
+needs DEEPSEEK_API_KEY; optional DEEPSEEK_MODEL retains its existing behavior.
+From the project root, with iOS Simulator open:
 
 ```sh
 flutter run --dart-define-from-file=.env --dart-define=EMBEDDING_URL=http://127.0.0.1:11434
 ```
 
-Android Emulator: use `http://10.0.2.2:11434` instead. Both modes need Ollama and
-DeepSeek. No MCP, new dependencies, model downloads beyond the existing embedding
-model, or separate servers added.
+For Android Emulator use http://10.0.2.2:11434. If index is missing, expand its
+status at the top of the app and press Build/Rebuild Index. Existing Day 22/23
+index remains compatible; changing evaluation questions does not affect it.
 
-## Manual check / short video
+## Ten-question manual evaluation
 
-1. Open Day 23 — Improved RAG. Confirm Structure index ready. Only if missing/stale,
-   expand the index status at the top → Build/Rebuild Index → wait until ready.
-   The existing builder still saves both strategies; retrieval uses Structure.
-2. Select control question 1. Show its question, expected 7 retries/13 seconds,
-   and expected source kedr-runtime.md / Повторные попытки.
-3. Press Run BASE. Show answer; expand BASE retrieved chunks for files, sections,
-   scores and previews. Collapse it afterwards to keep the answer visible.
-4. Without editing the question, press Run IMPROVED. Show original and rewritten
-   queries. Expand BEFORE FILTER to show up to 8 candidates and their scores.
-5. Collapse BEFORE FILTER; show threshold 0.60 and passed count. Expand AFTER FILTER:
-   only passing chunks, at most 3. It can legitimately contain fewer or zero.
-6. Collapse source lists and compare BASE and IMPROVED answers with expected facts.
-   Similar answers are possible; the visible pipeline differences are the proof.
+`evaluation/questions.json` reuses questions 1–9, replaces 10 with an intentional
+negative question about methane lakes on Titan. Expectations are UI-only.
 
-Only flutter analyze is permitted during implementation. No tests, application
-launch, index rebuilding or real API calls are performed by the coding agent.
+For each question select it, read Expected facts / sources, press Ask. For positive
+answers inspect Source present / Quote present / Quote exists in chunk, then read
+quotes and mark semantic support Yes/No. Insufficient context on a positive is
+shown as unanswered, not a passed citation check. Errors are recorded separately.
+Evaluation keeps outcomes/manual marks for this session; selecting a completed
+question restores its result. Rerunning resets its manual mark. No batch API calls.
+
+Negative #10 expects refusal, clarification and no sources. Check Retrieval details:
+if Selected=0, Final LLM must be not called. The question is outside corpus, but
+zero retrieval hits cannot be guaranteed without runtime scores. If any pass,
+the final LLM may abstain instead; that does not demonstrate the zero-hit guard.
+Threshold is unchanged and no question-specific retrieval rule is added.
+
+## Short video
+
+1. Open Day 24 — Grounded RAG; confirm index ready.
+2. Choose #1 (Kedr retries); show expected 7 retries/13 seconds; press Ask.
+3. Show answer, source/section/chunkId/exact quote and technical validation.
+4. Compare meaning yourself; mark Yes or No accordingly.
+5. Choose #10 (Titan), Ask; show refusal + clarification and no sources.
+6. Expand Retrieval details to show threshold, selected count and final LLM status.
+7. Show Evaluation with the ten questions; run all ten manually for full verification.
+
+Only flutter analyze is run by the coding agent. No tests, app launch, embeddings,
+LLM requests, index rebuild or runtime scenarios are executed during implementation.

@@ -81,7 +81,6 @@ class RetrievalService {
 
 // Initial threshold, not calibrated against runtime scores.
 class RetrievalConfig {
-  static const baseTopK = 3;
   static const topKBefore = 8;
   static const topKAfter = 3;
   static const similarityThreshold = 0.60;
