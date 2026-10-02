@@ -1,5 +1,5 @@
 name: ai_advent_day_01
-description: "AI Advent Day 22: local RAG and baseline comparison."
+description: "AI Advent Day 25: persistent RAG chat and task state."
 publish_to: 'none'
 version: 1.0.0+1
 

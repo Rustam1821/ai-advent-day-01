@@ -79,11 +79,12 @@ class RetrievalService {
   }
 }
 
-// Initial threshold, not calibrated against runtime scores.
+// Calibrated on the local embeddinggemma index: relevant retry query ~0.58;
+// out-of-corpus Titan question ~0.21. Keep a shared relevance guard.
 class RetrievalConfig {
   static const topKBefore = 8;
   static const topKAfter = 3;
-  static const similarityThreshold = 0.60;
+  static const similarityThreshold = 0.45;
 }
 
 class RelevanceFilter {
