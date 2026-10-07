@@ -25,10 +25,10 @@ class IndexRepository {
     chunks = []; path = null;
     try {
       final saved = await storage.restore(strategy: 'structure');
-      if (saved.isEmpty) throw StateError('Index not found. Нажмите Build/Rebuild Index.');
+      if (saved.isEmpty) throw StateError('Local RAG index not found. Build the index first.');
       final result = saved.single;
       final data = result.data;
-      if (data['strategy'] != 'structure' || data['embeddingProvider'] != 'Ollama' ||
+      if (data['version'] != 1 || data['strategy'] != 'structure' || data['embeddingProvider'] != 'Ollama' ||
           data['embeddingModel'] != EmbeddingService.model || data['embeddingDimensions'] != EmbeddingService.dimensions) {
         throw StateError('Несовместимая модель/размерность индекса. Нужен Rebuild Index.');
       }

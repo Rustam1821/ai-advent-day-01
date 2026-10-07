@@ -1,205 +1,153 @@
 import 'package:flutter/material.dart';
-import 'chat_session.dart';
+import 'cloud_llm_client.dart';
 import 'documents.dart';
+import 'embedding_service.dart';
 import 'indexing_service.dart';
+import 'local_llm_config.dart';
 import 'rag_service.dart';
 import 'retrieval_service.dart';
 
-void main() => runApp(const MyApp());
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+void main() => runApp(const LocalRagApp());
+
+class LocalRagApp extends StatelessWidget {
+  const LocalRagApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'Day 25 — RAG Chat', debugShowCheckedModeBanner: false,
+    title: 'Day 28 — Local RAG', debugShowCheckedModeBanner: false,
     theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4154B3)), useMaterial3: true),
-    home: const ChatPage(),
+    home: const LocalRagPage(),
   );
 }
-class ChatPage extends StatefulWidget {
-  const ChatPage({super.key});
+
+class LocalRagPage extends StatefulWidget {
+  const LocalRagPage({super.key});
   @override
-  State<ChatPage> createState() => _ChatPageState();
+  State<LocalRagPage> createState() => _LocalRagPageState();
 }
-class _ChatPageState extends State<ChatPage> {
-  final _indexing = IndexingService();
-  late final _repository = IndexRepository(_indexing);
-  late final _rag = RagService(_repository);
-  final _store = ChatStore();
-  ChatSession _session = ChatSession();
+
+class _LocalRagPageState extends State<LocalRagPage> {
   final _input = TextEditingController();
-  final _scroll = ScrollController();
-  bool _busy = true, _loadFailed = false;
-  String _indexStatus = 'Loading index…', _progress = '';
-  String? _storageError;
+  final _storage = IndexingService();
+  late final _repository = IndexRepository(_storage);
+  late final _rag = RagService(_repository);
+  bool _busy = true;
+  String _indexStatus = 'Loading local index…';
+  String _activity = '';
+  String? _error;
+  RagResult? _result;
 
   @override
-  void initState() { super.initState(); _initialize(); }
-  Future<void> _initialize() async {
-    try {
-      final session = await _store.load();
-      if (mounted) setState(() => _session = session);
-      if (session.messages.isNotEmpty && session.messages.last.role == 'user') {
-        _progress = 'Предыдущий запрос прерван. Отправьте следующий вопрос для продолжения.';
-      }
-    } catch (error) {
-      _loadFailed = true;
-      _storageError = 'История не загружена: $error. Файл не перезаписан. Повторите загрузку или начните новый диалог.';
-    }
-    await _loadIndex();
-    if (mounted) { setState(() => _busy = false); _bottom(); }
+  void initState() {
+    super.initState();
+    _load();
   }
-  Future<void> _loadIndex() async {
+
+  Future<void> _load() async {
     try {
       await _repository.load();
-      if (mounted) setState(() => _indexStatus = 'Structure index ready · ${_repository.chunks.length} chunks');
+      if (mounted) setState(() => _indexStatus = 'Index ready: ${_repository.chunks.length} chunks\n${_repository.path}');
     } catch (error) {
-      if (mounted) setState(() => _indexStatus = '$error');
-    }
-  }
-  Future<void> _save() async {
-    try {
-      await _store.save(_session);
-      if (mounted) setState(() => _storageError = null);
-    } catch (error) {
-      if (mounted) setState(() => _storageError = 'Не удалось сохранить чат: $error. Данные пока только в памяти.');
-    }
-  }
-  Future<void> _retryStorage() async {
-    setState(() => _busy = true);
-    if (_loadFailed) {
-      _loadFailed = false; _storageError = null;
-      await _initialize();
-    } else {
-      await _save();
+      if (mounted) setState(() => _indexStatus = error.toString());
+    } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
-  void _bottom() => WidgetsBinding.instance.addPostFrameCallback((_) {
-    if (mounted && _scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
-  });
-  void _updateProgress(String value) { if (mounted) setState(() => _progress = value); }
-  Future<void> _send() async {
-    final question = _input.text.trim();
-    if (_busy || _loadFailed || question.isEmpty) return;
-    final recent = _session.recent(); // Current question is sent separately, exactly once.
+
+  Future<void> _build() async {
+    if (_busy) return;
+    setState(() { _busy = true; _error = null; _result = null; _activity = 'Building local index…'; });
+    try {
+      await _storage.build(await DocumentLoader().load(), (progress) {
+        if (mounted) setState(() => _activity = progress);
+      });
+      await _repository.load();
+      if (mounted) setState(() => _indexStatus = 'Index ready: ${_repository.chunks.length} chunks\n${_repository.path}');
+    } catch (error) {
+      if (mounted) setState(() => _error = error.toString());
+    } finally {
+      if (mounted) setState(() { _busy = false; _activity = ''; });
+    }
+  }
+
+  Future<void> _ask({bool compare = false}) async {
+    if (_busy) return;
+    if (_input.text.trim().isEmpty) {
+      setState(() => _error = 'Enter a question before sending.');
+      return;
+    }
+    FocusScope.of(context).unfocus();
     setState(() {
-      _busy = true; _input.clear();
-      _session.messages.add(ChatMessage(role: 'user', content: question));
+      _busy = true; _error = null; _result = null;
+      _activity = compare ? 'Retrieving once, then generating Local and Cloud answers…' : 'Local retrieval and generation…';
     });
-    _bottom();
-    await _save();
-    RagResult? partial;
     try {
-      final result = await _rag.answer(question, _session.state, recent, (state) async {
-        if (mounted) setState(() => _session.state = state);
-        await _save();
-      }, _updateProgress, (result) => partial = result);
-      if (mounted) {
-        setState(() => _session.messages.add(ChatMessage(role: 'assistant',
-          content: result.answer!.answer, answer: result.answer, evidence: result.retrieved, candidates: result.candidates,
-          query: result.rewrittenQuery, finalLlmRequested: result.finalLlmRequested)));
-      }
+      final result = await _rag.ask(_input.text, compare: compare);
+      if (mounted) setState(() => _result = result);
     } catch (error) {
-      if (mounted) {
-        setState(() => _session.messages.add(ChatMessage(role: 'assistant',
-          content: 'Запрос не завершён: $error', error: true, evidence: partial?.retrieved ?? [], candidates: partial?.candidates ?? [],
-          query: partial?.rewrittenQuery, finalLlmRequested: partial?.finalLlmRequested ?? false)));
-      }
+      if (mounted) setState(() => _error = error.toString());
     } finally {
-      await _save();
-      if (mounted) { setState(() { _busy = false; _progress = ''; }); _bottom(); }
+      if (mounted) setState(() { _busy = false; _activity = ''; });
     }
   }
-  Future<void> _reset() async {
-    setState(() => _busy = true);
-    final empty = ChatSession();
-    try {
-      await _store.save(empty);
-      if (mounted) {
-        setState(() { _session = empty; _loadFailed = false; _storageError = null; _progress = ''; _input.clear(); });
-      }
-    } catch (error) {
-      if (mounted) setState(() => _storageError = 'Новый диалог не сохранён: $error. Старый чат оставлен.');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-  Future<void> _rebuild() async {
-    setState(() => _busy = true);
-    try {
-      await _indexing.build(await DocumentLoader().load(), _updateProgress);
-      await _loadIndex();
-      _updateProgress('Index saved');
-    } catch (error) { _updateProgress('Rebuild failed: $error'); }
-    finally { if (mounted) setState(() => _busy = false); }
-  }
-  Widget _message(ChatMessage m) => Card(
-    color: m.role == 'user' ? Theme.of(context).colorScheme.primaryContainer : null,
-    child: Padding(padding: const EdgeInsets.all(12), child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(m.role == 'user' ? 'User' : 'Assistant', style: const TextStyle(fontWeight: FontWeight.bold)),
-        SelectableText(m.content, style: m.error ? TextStyle(color: Theme.of(context).colorScheme.error) : null),
-        if (m.answer?.isInsufficientContext == true) ...[
-          Text(m.answer!.clarificationRequest!), const Text('Sources: none · Недостаточно контекста'),
-        ],
-        if (m.answer != null && !m.answer!.isInsufficientContext) ...[
-          const SizedBox(height: 8),
-          const Text('Sources & quotes · проверены ID / metadata / quote'),
-          for (final c in m.answer!.citations) Padding(padding: const EdgeInsets.only(top: 6),
-            child: SelectableText('${c.source} / ${c.section ?? "—"}\n${c.chunkId}\n«${c.quote}»')),
-        ],
-        if (m.role == 'assistant') ExpansionTile(title: const Text('RAG details'), children: [
-          SelectableText('Query: ${m.query ?? "не получен"}\nThreshold: ${RetrievalConfig.similarityThreshold}\n'
-            'Filtered chunks: ${m.evidence.length} · Final LLM: ${m.finalLlmRequested ? "requested" : "not called"}'),
-          const Text('BEFORE FILTER — candidates'),
-          if (m.candidates.isEmpty) const Text('Кандидаты не сохранены: отправьте вопрос заново.'),
-          for (final hit in m.candidates) Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: SelectableText('${hit.chunk.metadata['source']} / ${hit.chunk.metadata['section']}\n'
-              'Score: ${hit.score.toStringAsFixed(4)} · '
-              '${hit.score >= RetrievalConfig.similarityThreshold ? "PASS" : "BELOW THRESHOLD"}\n'
-              '${(hit.chunk.metadata['text'] as String).length > 300 ? (hit.chunk.metadata['text'] as String).substring(0, 300) : hit.chunk.metadata['text']}'),
-          ),
-          const Text('AFTER FILTER — sent context'),
-          for (final hit in m.evidence) Text('${hit.chunk.metadata['source']} / '
-            '${hit.chunk.metadata['section']} · ${hit.score.toStringAsFixed(3)}'),
-        ]),
-      ],
-    )),
-  );
+
   @override
-  void dispose() { _input.dispose(); _scroll.dispose(); _rag.dispose(); _indexing.dispose(); super.dispose(); }
+  void dispose() {
+    _input.dispose();
+    _storage.dispose();
+    super.dispose();
+  }
+
+  Widget _answer(String label, GenerationResult answer) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(label, style: Theme.of(context).textTheme.titleLarge),
+        Text('${answer.error == null ? 'Generation' : 'Failed after'}: ${(answer.elapsed.inMilliseconds / 1000).toStringAsFixed(1)} s'),
+        const SizedBox(height: 10),
+        SelectableText(answer.text ?? answer.error!, style: answer.error == null ? null : TextStyle(color: Theme.of(context).colorScheme.error)),
+      ]),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Day 25 — RAG Chat')),
-    body: SafeArea(child: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 850),
-      child: Column(children: [
-        Expanded(child: ListView(controller: _scroll, padding: const EdgeInsets.all(12), children: [
-          ExpansionTile(title: const Text('TASK STATE'), children: [
-            SelectableText('Goal: ${_session.state.goal}\n'
-              'Clarifications:\n${_session.state.clarifications.join('\n')}\n'
-              'Constraints:\n${_session.state.constraints.join('\n')}\n'
-              'Terms:\n${_session.state.terms.join('\n')}'),
-          ]),
-          ExpansionTile(title: Text(_indexStatus), children: [
-            OutlinedButton(onPressed: _busy ? null : _rebuild, child: const Text('Build/Rebuild Index')),
-          ]),
-          if (_session.messages.isEmpty) const Text('Задайте цель диалога и первый вопрос по базе знаний.'),
-          for (final m in _session.messages) _message(m),
-        ])),
-        if (_storageError != null) Padding(padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Column(children: [Text(_storageError!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
-            TextButton(onPressed: _busy ? null : _retryStorage, child: const Text('Retry storage'))])),
-        if (_busy) const LinearProgressIndicator(),
-        if (_progress.isNotEmpty) Text(_progress),
-        Padding(padding: const EdgeInsets.all(8), child: Row(children: [
-          Expanded(child: TextField(controller: _input, enabled: !_busy && !_loadFailed,
-            minLines: 1, maxLines: 4, maxLength: 2000,
-            decoration: const InputDecoration(labelText: 'Message', counterText: ''))),
-          FilledButton(onPressed: _busy || _loadFailed ? null : _send, child: const Text('Send')),
-        ])),
-        TextButton(onPressed: _busy ? null : _reset, child: const Text('New conversation')),
-      ]),
-    ))),
+    appBar: AppBar(title: const Text('Day 28 — Local RAG')),
+    body: SafeArea(child: SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Center(child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 800),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          const SelectableText('Mode: LOCAL RAG\nRetrieval: Local\nGenerator: Ollama / ${LocalLlmConfig.model}\nEmbedding: ${EmbeddingService.model}:latest (768)\nEndpoint: ${LocalLlmConfig.baseUrl}'),
+          const SizedBox(height: 12),
+          SelectableText(_indexStatus),
+          TextButton(onPressed: _busy ? null : _build, child: const Text('Build / Rebuild Local Index')),
+          const SizedBox(height: 16),
+          TextField(controller: _input, enabled: !_busy, minLines: 2, maxLines: 6,
+            decoration: const InputDecoration(labelText: 'Question', border: OutlineInputBorder())),
+          const SizedBox(height: 12),
+          FilledButton(onPressed: _busy ? null : () => _ask(), child: const Text('Ask Local')),
+          OutlinedButton(onPressed: _busy || !CloudLlmClient.available ? null : () => _ask(compare: true),
+            child: const Text('Compare Local vs Cloud')),
+          Text(CloudLlmClient.available
+            ? 'Comparison sends the same retrieved context to DeepSeek / ${CloudLlmClient.model}.'
+            : 'Cloud comparison unavailable: no DEEPSEEK_API_KEY. Ask Local works without it.'),
+          if (_busy) ...[const SizedBox(height: 16), const LinearProgressIndicator(), Text(_activity)],
+          if (_error != null) ...[const SizedBox(height: 16), SelectableText(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error))],
+          if (_result != null) ...[
+            const SizedBox(height: 20),
+            _answer('LOCAL — ${LocalLlmConfig.model}', _result!.local),
+            if (_result!.cloud != null) _answer('CLOUD — ${CloudLlmClient.model}', _result!.cloud!),
+            const SizedBox(height: 16),
+            Text('Retrieved sources (shared context)', style: Theme.of(context).textTheme.titleLarge),
+            const Text('These chunks were provided to generation; they are not verified citations.'),
+            for (final hit in _result!.sources) ExpansionTile(
+              title: Text(hit.chunk.metadata['source'] as String),
+              subtitle: Text('${hit.chunk.metadata['section'] ?? 'No section'}\n${hit.chunk.metadata['chunk_id']} · score ${hit.score.toStringAsFixed(3)}'),
+              children: [Padding(padding: const EdgeInsets.all(12), child: SelectableText(hit.chunk.metadata['text'] as String))],
+            ),
+          ],
+        ]),
+      )),
+    )),
   );
 }

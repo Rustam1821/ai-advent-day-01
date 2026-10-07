@@ -1,126 +1,154 @@
-# Day 25 — Mini Chat with RAG
+# Day 28 — Local RAG
 
-## Architecture
+Question → local Ollama embeddinggemma → local vector search → retrieved chunks
+→ Ollama qwen3:4b → answer + retrieved sources.
 
-- `lib/chat_session.dart`: ChatMessage (id, user/assistant role, content, timestamp,
-  grounded answer/citations, source snapshots, retrieval query/scores and error flag),
-  ChatSession, TaskState and atomic JSON persistence.
-- Full history is displayed and persisted in app Documents/chat_session.json together
-  with goal/clarifications/constraints/terms. Source snapshots omit vectors; old
-  citations are checked against those snapshots on load, without retrieval/API calls.
-- History records what was said. Task State holds current user decisions. RAG index
-  remains the documentary knowledge source. Neither history nor state replaces it.
-- `TaskStateService` in lib/rag_service.dart combines state extraction and query
-  rewrite into one strict JSON LLM request: taskState + retrievalQuery. It receives
-  previous state, current user text, and user messages from the last 6 non-error
-  messages (max 2000 chars per message). Assistant answers are excluded from state
-  extraction to prevent documentary facts entering user state. Final generation
-  still receives both roles in the recent window. Current question is not duplicated.
-- State is bounded: goal <=500 chars, each list <=8 items of <=250 chars. Prompt
-  preserves the long-lived goal, replaces explicitly corrected values, merges
-  duplicates, and prohibits copying assistant facts into user constraints. Invalid
-  JSON/state fails visibly, retains previous state, and does not silently continue.
-  Semantic extraction is model-driven; verify corrections during manual scenarios.
-- Every Send saves the user message, updates/saves state, embeds the standalone
-  query, loads the existing Structure index, runs cosine Top-8, threshold 0.45,
-  max Top-3, and generates a grounded answer. No non-RAG routing exists. Operational
-  errors stop the turn visibly rather than claiming retrieval succeeded.
-- Final prompt separates TASK STATE, RECENT CONVERSATION, SOURCES and CURRENT USER
-  QUESTION. User constraints are not document facts; previous assistant answers are
-  not authoritative sources. Final citations may refer only to current filtered chunks.
-- Day 24 GroundingValidator unchanged: exact IDs/source/section, quote substring
-  after whitespace normalization. Malformed answers/invalid citations are hidden.
-  Quotes prove textual provenance, not semantic entailment; inspect meaning manually.
-- Ordinary turn: 1 state/rewrite LLM + 1 embedding + 1 final LLM. Zero filtered chunks:
-  final LLM skipped; deterministic “не знаю” + clarification, empty sources. If context
-  passes threshold but lacks the answer, final LLM may also abstain.
-- User turn is persisted before APIs; updated state before retrieval; response after
-  validation. A interrupted turn is not auto-replayed on restart. Send a follow-up.
-  Save failures remain visible with Retry storage; load failures block Send to avoid
-  overwriting unread history. New conversation writes an empty session, leaves index
-  and corpus untouched. No chat list, summarizer, MCP or extra memory layers.
+LOCAL RAG needs no internet or DeepSeek key after models and the index are present.
+No cloud embeddings, query rewrite, reranking, task state, chat memory, streaming,
+retry, agent framework or automatic quality/stability benchmarks.
 
-## Changes and launch
+## Provenance and index compatibility
 
-Day 24 evaluation/comparison controls replaced by chat, compact Task State and
-per-answer RAG details. Existing control dataset remains available in repository.
-Corpus, embeddinggemma 768, index, grounding validator and dependencies unchanged.
-No rebuild required for an existing current index. If missing, expand index status
-near top of chat → Build/Rebuild Index.
+Restored from `Day_25` (commit `8a5da09`), inspected against original `Day_21`
+(commit `11b3d76`): corpus/manifest/license, document/chunk metadata, structure-aware
+chunker, JSON storage/loader, cosine retrieval and deterministic relevance filter.
+The corpus is the same 14 documents: 12 Rust Book chapters and two fictional Kedr
+specifications, `documents/kedr-runtime.md` and `documents/kedr-support.md`.
 
-Keep Ollama running with embeddinggemma installed. Existing `.env`:
-DEEPSEEK_API_KEY required, DEEPSEEK_MODEL optional (same default deepseek-v4-flash).
-With iOS Simulator already open, from project root:
+Day 21 already used **local Ollama embeddinggemma, 768 dimensions**, not a cloud
+embedding provider. `embeddinggemma` resolves to `embeddinggemma:latest`. Documents
+and questions use the same model, dimensions and `/api/embed` with `truncate: false`.
+Keep the same installed embeddinggemma model used for the old index. Old metadata
+has a model name but no weights digest; if you have replaced its weights, manually
+rebuild. No compatibility is inferred from dimensions alone.
 
-```sh
-flutter run --dart-define-from-file=.env --dart-define=EMBEDDING_URL=http://127.0.0.1:11434
+The index is not committed to git. It lives in the same app's Documents directory:
+
+```text
+<Application Documents>/day21/current.json               # {"run":"run_<timestamp>"}
+<Application Documents>/day21/run_<timestamp>/index_structure.json
 ```
 
-Android Emulator: use http://10.0.2.2:11434. Nothing new to install.
+Vectors are stored with every chunk in `chunks[].embedding`. Loading validates
+version, strategy, Ollama provider, model, dimensions, corpus SHA-256, metadata,
+unique IDs and finite nonzero vectors. The actual path and chunk count appear in UI.
+A compatible existing index is reused without rebuilding. Whether it still exists
+in your particular Simulator's app container must be checked manually.
 
-## Manual scenarios
+Missing/corrupt/incompatible index is a visible error. There is no automatic rebuild.
+If needed, tap **Build / Rebuild Local Index**. This runs local document embeddings
+in batches of eight, builds only the structure index and publishes the pointer after
+successful saving. It reuses the old structure chunking and schema, without restoring
+fixed-vs-structure comparison. Existing runs remain on disk. No rebuild has been
+performed by Codex.
 
-Send each row as a separate message and wait for completion. Inspect sources/quotes
-and RAG details on every factual answer, including late turns. These are proposed
-manual scenarios, not executed results. Sources live in documents/kedr-runtime.md
-and documents/kedr-support.md. Insufficient context or invalid citations are visible
-failures to obtain the desired factual answer, not successful scenario verification.
+Retrieval embeds the original question once, computes cosine similarity locally,
+keeps Top-8 candidates, filters score >=0.45 and supplies at most Top-3 chunks.
+Parameters are centralized in `RetrievalConfig`. No truncation/padding of vectors.
+No relevant chunks produces a visible insufficient-knowledge message and skips
+both generators. A relevant chunk can still lack the answer; the prompt explicitly
+asks the generator to acknowledge insufficient context.
 
-### Scenario 1 — sender configuration (12 user turns)
+## Setup and run — iOS Simulator
 
-Start with New conversation.
+Use the existing iOS Simulator on this Mac, same app ID/container if reusing its old
+index. There is no macOS target in this project. Physical phones and Android
+emulators are not the target of this loopback configuration.
 
-| Turn | Exact user message | Check |
-|---|---|---|
-| 1 | Хочу подготовить настройки отправителя событий проекта Кедр. Каковы документированные правила повторной отправки? | Long-lived goal; retrieval retry section (7 repeats, 13 seconds). |
-| 2 | Настраиваем тестовую среду. Какие лимиты пакета нужно учитывать? | clarification environment=test; packet limits 240 events/48 KiB. |
-| 3 | Буду называть отправитель «курьером». Какой максимум повторов поддерживается для него? | term курьер=отправитель; follow-up + fresh retrieval. |
-| 4 | Для нашей конфигурации ограничим повторы пятью. Это укладывается в документацию? | constraint 5 user-selected vs documented 7. |
-| 5 | Ещё ограничение: в пакете не больше 100 событий. Это допустимо? | second constraint 100 vs documented 240. |
-| 6 | А сколько ему ждать между повторами? | resolve ему via state/recent history; 13 seconds. |
-| 7 | Нет, среду меняем с тестовой на production. Напомни правила повторов для курьера, не придумывая отдельные production-правила. | replace old environment, retain goal/alias/constraints. |
-| 8 | Исправление: максимум повторов у нас теперь 3, а не 5. Сравни с документированным максимумом. | replace constraint 5→3, preserve 100 events. |
-| 9 | А что происходит после их исчерпания? | follow-up retry exhaustion → manual queue. |
-| 10 | Каков максимальный размер одного события для него? | alias survives recent-window turnover; 48 KiB. |
-| 11 | Сравни наш лимит пакета с документированным и напомни ограничение размера события. | old constraint 100 retained, sources refreshed (240/48 KiB). |
-| 12 | Подведи итог настройки курьера для выбранной среды: наши ограничения на повторы и пакет, документированные пределы и пауза. | original goal; production, 3 retries, 100 events; cite retrieved limits, no stale 5. |
+Prerequisites: configured Flutter/Xcode, booted iOS Simulator, Ollama installed,
+`qwen3:4b` and the previous `embeddinggemma:latest` installed locally.
+Execute yourself:
 
-### Scenario 2 — on-call memo (12 user turns)
+```sh
+open -a Ollama
+ollama list
+flutter run --debug
+```
 
-Press New conversation first; verify empty chat and all four empty state fields.
+Check both models in `ollama list`. Choose the booted iOS Simulator if Flutter asks.
+For explicit selection: `flutter devices`, then `flutter run --debug -d <SIMULATOR_ID>`.
+No model pull or `ollama run` is required for the already installed models.
+If the app says the index is missing, tap **Build / Rebuild Local Index** and wait.
+Do this before the video; it requires local embeddings but no internet.
 
-| Turn | Exact user message | Check |
-|---|---|---|
-| 1 | Хочу составить памятку дежурному проекта Кедр по инцидентам и восстановлению. Кто принимает первичные инциденты? | new goal, no sender state; Север-4 source. |
-| 2 | Памятка пока для опытных сотрудников. Какой канал используется для эскалации? | audience clarification; #kedr-p1. |
-| 3 | Буду называть подтверждение инцидента «квитанцией». Какой срок у квитанции по регламенту? | term, 11 minutes; support section. |
-| 4 | Наш внутренний целевой срок квитанции — 8 минут. Он укладывается в регламент? | user target 8 vs documentary maximum 11. |
-| 5 | И не называй квитанцию устранением причины. Что именно означает подтверждение? | constraint distinguishing acknowledgement vs repair. |
-| 6 | А кто должен её дать? | follow-up to acknowledgement; duty role, not invented role. |
-| 7 | Исправляю аудиторию: памятка для новичков, а не опытных сотрудников. Объясни им смысл квитанции. | replace audience; retained term and constraint. |
-| 8 | Целевой срок меняем с 8 на 5 минут. Сравни новый срок с регламентом. | replace target, no stale 8. |
-| 9 | Под «учением» дальше понимаю учебное восстановление. Когда оно проводится? | second term; first Friday, 09:15 UTC. |
-| 10 | А кто отвечает за него? | follow-up учение → Север-4. |
-| 11 | Учение заменяет окно развёртывания или у него своё расписание? | cross-file retrieval; distinct Tuesday 02:40 UTC vs first Friday 09:15 UTC. |
-| 12 | Заверши памятку для выбранной аудитории: квитанция, наш целевой срок, регламентный срок и отличие подтверждения от устранения причины. | goal retained; novices, target 5 vs documented 11, correct meaning and sources. |
+`LocalLlmConfig` retains `OLLAMA_BASE_URL=http://localhost:11434`,
+`OLLAMA_MODEL=qwen3:4b`, and a 3-minute timeout. Endpoints:
 
-## Persistence check and short video
+- embeddings: `http://localhost:11434/api/embed`
+- generation: `http://localhost:11434/api/generate`
 
-1. Run scenario 1 turns 1–6; show Goal, constraints, alias, and turn 6 RAG query/quotes.
-2. Send turns 7–8; show production replaces test, and 3 replaces 5.
-3. Finish 9–12; show sources still present and original goal retained.
-4. Wait for response/save (no storage error). Stop and restart app using same launch
-   configuration and same simulator/device; do not uninstall or clear app data.
-5. Show old messages, their sources/quotes, and restored Task State.
-6. Send “А какой теперь наш лимит повторов для курьера и какой предел в документации?”
-   Verify 3 vs 7, a fresh standalone query and fresh citations without re-explaining goal.
-7. Press New conversation; verify history/state cleared, index still ready.
-8. Run scenario 2 separately in full. For a short recording show 1, 3–4, 7–8, 10, 12
-   as excerpts of the real sequence; all 12 exact inputs are documented above.
+Only loopback HTTP addresses and the Qwen generation model are accepted. Local
+clients bypass proxies and disable redirects. Existing iOS local-network ATS
+permission is retained, without global arbitrary HTTP permission.
 
-Runtime scenarios were subsequently authorized by the user. The shared threshold was
-calibrated to 0.45 (retry query ~0.58; out-of-corpus Titan query ~0.21). DeepSeek JSON
-output mode is enabled for state/rewrite and final generation. Candidate scores before
-filtering are visible in RAG details. No automated test suite was added.
+## Optional cloud comparison
 
-Runtime verification results: [docs/day25-runtime.md](docs/day25-runtime.md).
+The old DeepSeek HTTP integration is reduced to `CloudLlmClient`, used only by the
+explicit **Compare Local vs Cloud** action. Without a key this action is disabled;
+**Ask Local** remains fully available. The default model is `deepseek-flash`
+(current official API model name), configurable with `DEEPSEEK_MODEL`.
+
+To enable comparison with your existing local .env (not modified by this change):
+
+```sh
+flutter run --debug --dart-define-from-file=.env --dart-define=DEEPSEEK_MODEL=deepseek-flash
+```
+
+Comparison intentionally sends the question and retrieved document context to
+`https://api.deepseek.com/chat/completions`. Ask Local never calls this provider.
+There is no automatic cloud fallback.
+
+One retrieval produces one immutable prompt containing instructions, the selected
+chunks' metadata/text and original question. Both generators receive that exact
+prompt. Local and cloud generation run sequentially; each stopwatch starts directly
+before its generator call and ends at a complete response/error, excluding retrieval.
+The UI shows separate LOCAL/CLOUD answers and seconds, with shared sources below.
+A generator failure remains separate and does not hide the other result. Model
+settings and output limits differ, so timings describe this demo, not a controlled
+performance benchmark. First local generation may include model loading.
+
+Local generation is non-streaming, `think:false`, displaying only final `response`.
+Sources are selected by the app (file/source, section, chunk ID, score, expandable
+text). They describe retrieved context, not validated citations or proof of each
+claim. No chain-of-thought or automatic quality scores are shown.
+
+## Manual verification and video
+
+1. Show `ollama list` with both models and running Ollama.
+2. Start Flutter and show Day 28, LOCAL RAG, local retrieval, embedding and generator.
+3. Verify index ready; build manually only if missing/incompatible.
+4. Ask Local: `Каковы правила повторной отправки событий проекта Кедр?`
+5. Check answer against source text (7 repeats, 13-second interval), time and sources.
+6. Ask: `Каковы ограничения размера пакета и одного события проекта Кедр?`
+   Compare with retrieved source (240 events / 48 KiB; individual event 48 KiB).
+7. Leave Ollama/app running, disconnect Wi-Fi and other internet connections, then
+   Ask Local again. Successful query embedding + retrieval + generation shows the
+   complete pipeline works offline.
+8. Optional: reconnect internet, launch with a key, Compare Local vs Cloud on the
+   same question. Inspect two answers, generation times and shared sources.
+
+Quality: manually compare correctness, completeness, context adherence and invented
+facts. Stability: repeat a few questions and inspect failures/format/context use.
+Do not infer a stability score from a single run. No runtime results are claimed.
+
+Error checks (optional): quit Ollama fully and Ask Local; expect a readable local
+connection error. Missing model, embedding failure, mismatch, malformed index and
+no relevant chunks are explicit errors. Restart Ollama; submit again. Do not remove
+models or damage your index just to record an error.
+
+## Files and dependencies
+
+- `lib/documents.dart`: restored corpus loader and structure chunker.
+- `lib/indexing_service.dart`: restored storage, optional manual structure builder.
+- `lib/retrieval_service.dart`: restored index validation/cosine/filter.
+- `lib/embedding_service.dart`: old embedding contract with local-only HTTP handling.
+- `lib/local_llm_client.dart`, `lib/local_llm_config.dart`: reused Day 27 generation.
+- `lib/rag_service.dart`: one retrieval, shared prompt, generation timing/results.
+- `lib/cloud_llm_client.dart`: isolated optional DeepSeek generation.
+- `lib/main.dart`: single Day 28 screen.
+
+Restored `crypto` for corpus hashes and `path_provider` for the existing index path.
+No new packages, tests or old Days 22–25 screens were added. Old task state, memory,
+rewrite, citation validator, evaluation/debug panels remain removed. The local .env
+file is preserved. Codex validation is limited to `flutter analyze`; no app, model,
+embedding, cloud API, rebuild or runtime benchmark is executed.

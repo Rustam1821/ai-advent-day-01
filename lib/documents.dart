@@ -44,23 +44,6 @@ abstract class Chunker {
   List<Chunk> split(Document doc);
 }
 
-class FixedSizeChunker implements Chunker {
-  static const size = 1200, overlap = 150;
-  @override
-  String get name => 'fixed';
-  @override
-  List<Chunk> split(Document doc) {
-    final chunks = <Chunk>[];
-    for (var start = 0; start < doc.content.length; start += size - overlap) {
-      final end = (start + size).clamp(0, doc.content.length);
-      final text = doc.content.substring(start, end);
-      if (text.trim().isNotEmpty) chunks.add(Chunk(doc, name, chunks.length + 1, null, text));
-      if (end == doc.content.length) break;
-    }
-    return chunks;
-  }
-}
-
 class StructureAwareChunker implements Chunker {
   static const size = 1200;
   @override

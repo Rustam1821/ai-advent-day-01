@@ -31,7 +31,7 @@ class IndexingService {
     final run = (jsonDecode(await pointer.readAsString()) as Map)['run'] as String;
     if (!RegExp(r'^run_[0-9]+$').hasMatch(run)) throw const FormatException('Invalid index location');
     final results = <IndexResult>[];
-    for (final selected in strategy == null ? ['fixed', 'structure'] : [strategy]) {
+    for (final selected in strategy == null ? ['structure'] : [strategy]) {
       final file = File('${root.path}/$run/index_$selected.json');
       results.add(IndexResult(Map<String, dynamic>.from(jsonDecode(await file.readAsString()) as Map), file.path));
     }
@@ -46,7 +46,7 @@ class IndexingService {
       for (final doc in documents) {'file': doc.file, 'content': doc.content},
     ]))).toString();
     final results = <IndexResult>[];
-    for (final chunker in <Chunker>[FixedSizeChunker(), StructureAwareChunker()]) {
+    for (final chunker in <Chunker>[StructureAwareChunker()]) {
       progress('${chunker.name}: Chunking…');
       final chunks = [for (final doc in documents) ...chunker.split(doc)];
       if (chunks.isEmpty) throw StateError('Chunker не создал chunks.');
@@ -78,9 +78,9 @@ class IndexingService {
       await _write(file, data);
       results.add(IndexResult(data, file.path));
     }
-    // Publish comparison only when both indexes for the same corpus are saved.
+    // Publish the index only after all vectors have been saved.
     await _write(File('${root.path}/current.json'), {'run': run});
-    progress('Done · оба индекса сохранены');
+    progress('Done · local structure index saved');
     return results;
   }
   void dispose() => embeddings.dispose();

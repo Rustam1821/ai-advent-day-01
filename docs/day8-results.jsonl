@@ -1,8 +1,0 @@
-{"scenario":"short_1","model":"deepseek-v4-flash","current_message_estimate":13,"context_api":46,"response_api":13,"total_api":59,"elapsed_ms":931,"error":null,"content":"Понял. Кодовое слово: cobalt815.","turns":1}
-{"scenario":"short_2","model":"deepseek-v4-flash","current_message_estimate":6,"context_api":69,"response_api":3,"total_api":72,"elapsed_ms":582,"error":null,"content":"cobalt815","turns":2}
-{"scenario":"long_1","model":"deepseek-v4-flash","current_message_estimate":6,"context_api":4116,"response_api":3,"total_api":4119,"elapsed_ms":929,"error":null,"content":"cobalt815","turns":4}
-{"scenario":"long_2","model":"deepseek-v4-flash","current_message_estimate":6,"context_api":8163,"response_api":3,"total_api":8166,"elapsed_ms":1112,"error":null,"content":"cobalt815","turns":6}
-{"scenario":"restored_long","model":"deepseek-v4-flash","current_message_estimate":6,"context_api":8176,"response_api":3,"total_api":8179,"elapsed_ms":940,"error":null,"content":"cobalt815","turns":7}
-{"scenario":"overflow","model":"deepseek-v4-flash","current_message_estimate":3,"context_api":null,"response_api":null,"total_api":null,"elapsed_ms":2965,"error":"HTTP 400. This model's maximum context length is 1048576 tokens. However, you requested 1109821 tokens (1108221 in the messages, 1600 in the completion). Please reduce the length of the messages or completion.","content":null,"turns":9}
-{"clear_error":null,"turns_after_clear":0}
-{"scenario":"after_clear","model":"deepseek-v4-flash","current_message_estimate":3,"context_api":37,"response_api":1,"total_api":38,"elapsed_ms":597,"error":null,"content":"OK","turns":1}
