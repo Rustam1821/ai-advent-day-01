@@ -15,9 +15,9 @@ class LocalLlmConfig {
         !['localhost', '127.0.0.1', '::1'].contains(base.host) ||
         base.userInfo.isNotEmpty ||
         (base.path.isNotEmpty && base.path != '/') ||
-        base.hasQuery || base.hasFragment || model != 'qwen3:4b') {
+        base.hasQuery || base.hasFragment) {
       throw const FormatException(
-        'Use a local loopback HTTP endpoint and the qwen3:4b model.',
+        'Use a local loopback HTTP endpoint.',
       );
     }
     return base.replace(path: '/api/generate');

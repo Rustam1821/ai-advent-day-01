@@ -1,5 +1,5 @@
 name: ai_advent_day_01
-description: "AI Advent Day 28: local RAG with optional cloud comparison."
+description: "AI Advent Day 29: local RAG generation configuration comparison."
 publish_to: 'none'
 version: 1.0.0+1
 

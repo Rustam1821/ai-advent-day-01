@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Day 28 — Local RAG (iOS Simulator)",
+      "name": "Day 29 — Local LLM Optimization (iOS Simulator)",
       "request": "launch",
       "type": "dart",
       "flutterMode": "debug"
