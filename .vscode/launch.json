@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Day 29 — Local LLM Optimization (iOS Simulator)",
+      "name": "Day 30 — Private AI",
       "request": "launch",
       "type": "dart",
       "flutterMode": "debug"
