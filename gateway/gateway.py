@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODEL = 'qwen3:4b'
 MAX_BODY = 32768
-MAX_MESSAGES = 24
+MAX_MESSAGES = 0
 MAX_CONTEXT_BYTES = 6000
 CONTEXT_TOKENS = 8192
 OUTPUT_TOKENS = 512
