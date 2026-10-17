@@ -95,11 +95,12 @@ def split_document(path, content):
     return chunks
 
 
-def retrieve(question):
+def retrieve(question, documents=None):
     global INDEX
-    paths = [ROOT / 'README.md', *sorted((ROOT / 'docs').rglob('*.md'))]
-    documents = [(p.relative_to(ROOT).as_posix(), p.read_text(encoding='utf-8'))
-                 for p in paths if p.is_file() and not p.is_symlink()]
+    if documents is None:
+        paths = [ROOT / 'README.md', *sorted((ROOT / 'docs').rglob('*.md'))]
+        documents = [(p.relative_to(ROOT).as_posix(), p.read_text(encoding='utf-8'))
+                     for p in paths if p.is_file() and not p.is_symlink()]
     digest = hashlib.sha256(json.dumps(documents).encode()).hexdigest()
     if INDEX is None or INDEX[0] != digest:
         chunks = [chunk for path, text in documents for chunk in split_document(path, text)]
@@ -143,7 +144,7 @@ class McpClient:
             raise ValueError('MCP protocol error')
         return result['result']
 
-    def branch(self):
+    def call(self, name, arguments):
         try:
             initialized = self.rpc('initialize', {'protocolVersion': self.protocol,
                 'capabilities': {}, 'clientInfo': {'name': 'day31-gateway', 'version': '1.0.0'}})
@@ -159,12 +160,16 @@ class McpClient:
                 if cursor in seen:
                     raise ValueError('Repeated MCP cursor')
                 seen.add(cursor)
-            if not any(t['name'] == 'get_current_branch' for t in tools):
-                raise ValueError('MCP branch tool not found')
-            result = self.rpc('tools/call', {'name': 'get_current_branch', 'arguments': {}})
+            if not any(t['name'] == name for t in tools):
+                raise ValueError(f'MCP tool not found: {name}')
+            result = self.rpc('tools/call', {'name': name, 'arguments': arguments})
             if result.get('isError'):
-                raise ValueError('MCP cannot read Git branch')
+                raise ValueError(f'MCP tool failed: {name}')
             data = result.get('structuredContent')
+            if name != 'get_current_branch':
+                if not isinstance(data, dict):
+                    raise ValueError('Invalid MCP data')
+                return data
             if not isinstance(data, dict) or not isinstance(data.get('detached'), bool):
                 raise ValueError('Invalid branch result')
             if not data['detached'] and (not isinstance(data.get('branch'), str) or not data['branch']):
@@ -179,6 +184,9 @@ class McpClient:
                         pass
                 except OSError:
                     pass
+
+    def branch(self):
+        return self.call('get_current_branch', {})
 
 
 def answer(question):

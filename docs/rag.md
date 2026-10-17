@@ -29,3 +29,10 @@ qwen3:4b получает текущий вопрос и найденные SOUR
 
 Используются только локальные модели: embeddinggemma для retrieval, qwen3:4b
 для маршрутизации и ответа. Сохранённого индекса, БД, reranker и query rewrite нет.
+
+## Day 32
+
+`retrieve(question, documents=...)` использует ту же индексацию для PR corpus,
+полученного через MCP из Git head: README/docs и разрешённые исходники.
+Рабочая копия и локальные секреты не используются. Лимиты и упаковка контекста:
+[Code Review](../README.md#day-32--automated-code-review).

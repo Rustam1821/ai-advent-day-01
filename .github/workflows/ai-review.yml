@@ -1,0 +1,52 @@
+name: Local AI Code Review
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+jobs:
+  review:
+    if: >-
+      (github.event_name == 'pull_request_target' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+       github.event.comment.body == '/review' && github.event.sender.type != 'Bot' &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: [self-hosted, macOS, ai-review]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Never checkout or execute PR head, including workflow/scripts/pubspec.
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Trusted dependencies
+        run: flutter pub get
+      - name: MCP and common review pipeline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          env -u GH_TOKEN dart run server/developer_server.dart > "$RUNNER_TEMP/day32-mcp.log" 2>&1 &
+          MCP_PID=$!
+          trap 'kill "$MCP_PID" 2>/dev/null || true' EXIT
+          for attempt in {1..60}; do
+            kill -0 "$MCP_PID" || exit 1
+            if nc -z 127.0.0.1 3000; then break; fi
+            sleep 1
+          done
+          python3 gateway/code_review.py
+      - name: Save report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-review-${{ github.run_id }}
+          path: review.md
+          if-no-files-found: ignore

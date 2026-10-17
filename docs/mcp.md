@@ -2,7 +2,9 @@
 
 `server/developer_server.dart` использует mcp_dart 2.4.2 из Day 20.
 StreamableMcpServer слушает `127.0.0.1:3000/mcp` с JSON-ответами.
-Регистрируется только `get_current_branch`, без аргументов и без записи файлов.
+Day 31: `get_current_branch`, без аргументов и без записи файлов.
+Day 32: `get_pr_changes` получает base/head SHA и возвращает PR snapshot;
+подробности и ограничения — [Code Review](../README.md#day-32--automated-code-review).
 
 На каждом вызове инструмент выполняет `git -C <корень проекта> symbolic-ref
 --quiet --short HEAD` через Process.run, без shell. Корень определяется по
