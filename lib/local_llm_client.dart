@@ -11,7 +11,7 @@ class LocalLlmException implements Exception {
 
 class LocalLlmClient {
   Future<String> chat(String baseUrl, String token,
-      List<Map<String, String>> messages) async {
+      List<Map<String, String>> messages, {bool support = false, int? ticketId}) async {
     final base = Uri.tryParse(baseUrl.trim());
     if (base == null || base.scheme != 'https' || base.host.isEmpty ||
         base.userInfo.isNotEmpty || base.hasQuery || base.hasFragment ||
@@ -27,7 +27,8 @@ class LocalLlmClient {
         ..followRedirects = false
         ..headers.addAll({'Content-Type': 'application/json',
           'Authorization': 'Bearer ${token.trim()}'})
-        ..body = jsonEncode({'messages': messages});
+        ..body = jsonEncode({'messages': messages, if (support) 'mode': 'support',
+          if (support) 'ticket_id': ticketId});
       final response = await (() async {
         return http.Response.fromStream(await client.send(request));
       })().timeout(const Duration(minutes: 6));

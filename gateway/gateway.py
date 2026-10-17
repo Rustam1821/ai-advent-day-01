@@ -1,5 +1,6 @@
 """Day 31 developer assistant gateway. Python 3.10+, no third-party dependencies."""
 import developer_assistant
+import support_assistant
 import collections
 import hmac
 import json
@@ -91,8 +92,14 @@ class Handler(BaseHTTPRequestHandler):
             if len(raw) != length:
                 raise ValueError('Incomplete body')
             data = json.loads(raw)
-            if not isinstance(data, dict) or set(data) != {'messages'}:
+            if (not isinstance(data, dict) or 'messages' not in data
+                    or set(data) - {'messages', 'mode', 'ticket_id'}):
                 raise ValueError('Only messages is accepted')
+            mode = data.get('mode', 'chat')
+            ticket_id = data.get('ticket_id')
+            if mode not in ('chat', 'support') or (mode == 'support' and
+                    (type(ticket_id) is not int or ticket_id <= 0)):
+                raise ValueError('Invalid support ticket')
             messages = data['messages']
             if not isinstance(messages, list) or not 1 <= len(messages) <= MAX_MESSAGES:
                 raise ValueError('Provide 1–24 messages')
@@ -122,6 +129,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(503, {'error': 'Queue wait expired; retry later'}, 10)
                 return
             try:
+                if mode == 'support':
+                    answer = support_assistant.answer(ticket_id, messages)
+                    self.reply(200, {'model': MODEL, 'message': {'role': 'assistant', 'content': answer},
+                                     'done_reason': 'stop'})
+                    return
                 latest = messages[-1]['content'].strip()
                 if latest == '/help' or latest.startswith('/help ' ) or latest.startswith('/help\n'):
                     answer = developer_assistant.answer(latest[5:].strip())

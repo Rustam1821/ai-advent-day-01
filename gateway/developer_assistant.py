@@ -26,10 +26,10 @@ def post(url, data, headers=None, timeout=150):
         return (json.loads(raw) if raw else None), response.headers
 
 
-def complete(messages, schema):
+def complete(messages, schema, output_tokens=512):
     result, _ = post('http://127.0.0.1:11434/api/chat', {
         'model': 'qwen3:4b', 'messages': messages, 'stream': False, 'think': False,
-        'format': schema, 'options': {'num_ctx': 8192, 'num_predict': 512, 'temperature': 0}})
+        'format': schema, 'options': {'num_ctx': 8192, 'num_predict': output_tokens, 'temperature': 0}})
     if result.get('done') is not True or result.get('done_reason') == 'length':
         raise ValueError('Incomplete assistant response')
     return json.loads(result['message']['content'])

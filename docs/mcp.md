@@ -21,3 +21,10 @@ tools/list с пагинацией, затем tools/call. Проверяютс�
 Gateway дополнительно выводит фактическое значение branch отдельной строкой.
 Источник: `mcp://developer/get_current_branch`. Если MCP недоступен,
 Gateway возвращает ошибку, документация не используется как замена живой ветки.
+
+## Day 33: пользователи и обращения
+
+Тот же сервер предоставляет get_ticket({id: integer}) и get_user({id: integer}).
+Читаются data/tickets.json и data/users.json при каждом вызове; только чтение.
+Gateway сам берёт user_id из тикета, а не из ответа модели. Источники:
+`mcp://support/get_ticket/42`, `mcp://support/get_user/101`.

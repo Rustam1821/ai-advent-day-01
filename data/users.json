@@ -1,0 +1,23 @@
+[
+  {
+    "id": 101,
+    "name": "Анна",
+    "platform": "macOS",
+    "app_version": "33.0",
+    "model": "qwen3:4b"
+  },
+  {
+    "id": 102,
+    "name": "Илья",
+    "platform": "Android",
+    "app_version": "33.0",
+    "model": "qwen3:4b"
+  },
+  {
+    "id": 103,
+    "name": "Мария",
+    "platform": "iOS",
+    "app_version": "33.0",
+    "model": "qwen3:4b"
+  }
+]

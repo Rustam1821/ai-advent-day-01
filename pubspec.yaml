@@ -1,5 +1,5 @@
 name: ai_advent_day_01
-description: "AI Advent Day 31: Developer Assistant."
+description: "AI Advent Day 33: Support Assistant."
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -17,3 +17,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - data/tickets.json

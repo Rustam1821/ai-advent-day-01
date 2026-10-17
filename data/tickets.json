@@ -1,0 +1,31 @@
+[
+  {
+    "id": 42,
+    "user_id": 101,
+    "problem": "Local LLM unavailable",
+    "ollama_status": "stopped",
+    "details": "Локальная модель не отвечает. Диагностика на момент обращения: Ollama остановлена.",
+    "topic": "Ollama запуск проверка локальная модель"
+  },
+  {
+    "id": 43,
+    "user_id": 102,
+    "problem": "RAG не находит документы",
+    "details": "После добавления FAQ поиск завершился ошибкой model embeddinggemma not found.",
+    "topic": "RAG embeddinggemma установка индекс"
+  },
+  {
+    "id": 44,
+    "user_id": 103,
+    "problem": "MCP недоступен",
+    "details": "Gateway не может подключиться к 127.0.0.1:3000: connection refused. Статус процесса MCP неизвестен.",
+    "topic": "MCP подключение connection refused"
+  },
+  {
+    "id": 45,
+    "user_id": 101,
+    "problem": "Ошибка авторизации Gateway",
+    "details": "Flutter получает HTTP 401 после замены Bearer token. Значение токена не записано.",
+    "topic": "настройки Gateway HTTP 401 Bearer token"
+  }
+]

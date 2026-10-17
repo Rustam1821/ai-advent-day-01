@@ -94,6 +94,31 @@ McpServer createServer() {
             '48KB diff, 64KB per RAG file, 256KB corpus. Split oversized PR.')]);
       }
     });
+  // Read the fixture on every call: LLM never supplies user/ticket facts.
+  for (final entry in {'get_user': 'users', 'get_ticket': 'tickets'}.entries) {
+    server.registerTool(entry.key,
+      description: 'Read one ${entry.value} record from local JSON by id.',
+      inputSchema: JsonSchema.object(properties: {
+        'id': JsonSchema.integer(),
+      }, required: ['id']),
+      callback: (args, extra) async {
+        try {
+          final id = args['id'];
+          if (args.length != 1 || id is! int || id <= 0) {
+            throw const FormatException('Expected positive integer id');
+          }
+          final records = jsonDecode(await File(
+            '$projectRoot/data/${entry.value}.json').readAsString()) as List;
+          final record = records.cast<Map<String, dynamic>>().singleWhere(
+            (record) => record['id'] == id);
+          return CallToolResult(content: [TextContent(text: jsonEncode(record))],
+            structuredContent: record);
+        } catch (_) {
+          return CallToolResult(isError: true,
+            content: [TextContent(text: 'Record unavailable: check id and JSON fixture')]);
+        }
+      });
+  }
   return server;
 }
 
