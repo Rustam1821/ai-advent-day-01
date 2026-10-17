@@ -1,6 +1,8 @@
 """Day 31 developer assistant gateway. Python 3.10+, no third-party dependencies."""
 import developer_assistant
 import support_assistant
+import file_assistant
+import secrets
 import collections
 import hmac
 import json
@@ -30,6 +32,10 @@ GENERATION = threading.Lock()
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+JOBS = {}
+JOB_LOCK = threading.Lock()
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = 'PrivateGateway'
 
@@ -56,12 +62,72 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, socket.timeout):
             pass
 
+    def files(self, identity):
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+            if self.headers.get('Transfer-Encoding') or not 0 < length <= MAX_BODY:
+                raise ValueError('Invalid body')
+            data = json.loads(self.rfile.read(length))
+            action = data.get('action')
+            if action == 'start':
+                question = data.get('question')
+                if not isinstance(question, str) or not 1 <= len(question) <= 6000:
+                    raise ValueError('Invalid goal')
+                with JOB_LOCK:
+                    now = time.monotonic()
+                    for key in list(JOBS):
+                        if JOBS[key]['expires'] < now and JOBS[key]['done']:
+                            del JOBS[key]
+                    if len(JOBS) >= 16 or any(j['owner'] == identity and not j['done'] for j in JOBS.values()):
+                        raise ValueError('File task already running or capacity reached')
+                    job_id = secrets.token_urlsafe(32)
+                    job = {'owner': identity, 'expires': now + 3600, 'done': False, 'trace': [], 'started': now,
+                           'progress': {'phase': 'Ожидание очереди Ollama', 'step': 0}}
+                    JOBS[job_id] = job
+                def work():
+                    try:
+                        if not GENERATION.acquire(timeout=QUEUE_TIMEOUT):
+                            raise TimeoutError('Queue timeout')
+                        try:
+                            job['result'] = file_assistant.run(question, identity, job['trace'], job['progress'])
+                        finally:
+                            GENERATION.release()
+                    except (socket.timeout, TimeoutError):
+                        job['error'] = 'Ollama не завершила шаг за отведённое время. Файлы не записаны.'
+                    except ValueError as error:
+                        job['error'] = 'Ошибка ответа Ollama: ' + str(error)[:200] + '. Файлы не записаны.'
+                    except Exception:
+                        job['error'] = 'File assistant failed. Check MCP/Ollama; no unapproved writes.'
+                    finally:
+                        job['finished'] = time.monotonic()
+                        job['done'] = True
+                threading.Thread(target=work, daemon=True).start()
+                self.reply(200, {'job': job_id})
+            elif action == 'status':
+                with JOB_LOCK:
+                    job = JOBS.get(data.get('job')) if data.get('job') else next(
+                        (j for j in reversed(list(JOBS.values())) if j['owner'] == identity), None)
+                    if not job or job['owner'] != identity:
+                        raise ValueError('Unknown job')
+                    result = {k: v for k, v in job.items() if k not in ('owner', 'expires', 'started', 'finished')}
+                    result['elapsed_seconds'] = int(job.get('finished', time.monotonic()) - job['started'])
+                self.reply(200, result)
+            elif action in ('approve', 'cancel'):
+                self.reply(200, file_assistant.decide(data.get('proposal'), action == 'approve', identity))
+            else:
+                raise ValueError('Invalid action')
+        except (ValueError, TypeError, OSError, KeyError):
+            self.reply(400, {'error': 'File request failed or proposal stale; request a fresh preview.'})
+
     def do_POST(self):
         supplied = self.headers.get('Authorization', '')
         identity = next((i for i, token in enumerate(TOKENS)
                          if hmac.compare_digest(supplied.encode(), ('Bearer ' + token).encode())), None)
         if identity is None:
             self.reply(401, {'error': 'Valid Bearer token required'})
+            return
+        if self.path == '/v1/files':
+            self.files(identity)
             return
         if self.path != '/v1/chat':
             self.reply(404, {'error': 'Unknown endpoint'})

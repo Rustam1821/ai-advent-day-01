@@ -94,6 +94,41 @@ McpServer createServer() {
             '48KB diff, 64KB per RAG file, 256KB corpus. Split oversized PR.')]);
       }
     });
+  for (final name in ['list_files', 'search_text', 'read_file', 'get_diff', 'write_file']) {
+    server.registerTool(name,
+      description: {
+        'list_files': 'Find safe project text files by path substring query.',
+        'search_text': 'Search literal query across safe project files; returns paths and line numbers.',
+        'read_file': 'Read a project text file by relative path.',
+        'get_diff': 'Preview replacement content without writing. Returns expected hash and diff.',
+        'write_file': 'Without approval previews content only; saves exact preview only with signed Gateway user approval.',
+      }[name]!,
+      inputSchema: JsonSchema.object(properties: {
+        if (name == 'list_files' || name == 'search_text') 'query': JsonSchema.string(),
+        if (name != 'list_files' && name != 'search_text') 'path': JsonSchema.string(),
+        if (name == 'get_diff' || name == 'write_file') 'content': JsonSchema.string(),
+        if (name == 'write_file') ...{
+          'expected': JsonSchema.string(), 'approval': JsonSchema.string(),
+        },
+      }),
+      callback: (args, extra) async {
+        try {
+          final process = await Process.start('python3', ['$projectRoot/server/file_tools.py']);
+          process.stdin.write(jsonEncode({'tool': name, 'arguments': args}));
+          await process.stdin.close();
+          final output = process.stdout.transform(utf8.decoder).join();
+          final errors = process.stderr.drain<void>();
+          final code = await process.exitCode.timeout(const Duration(seconds: 30),
+            onTimeout: () { process.kill(); return -1; });
+          final data = jsonDecode(await output) as Map<String, dynamic>;
+          await errors;
+          return CallToolResult(isError: code != 0,
+            content: [TextContent(text: jsonEncode(data))], structuredContent: data);
+        } catch (_) {
+          return CallToolResult(isError: true, content: [TextContent(text: 'File operation failed')]);
+        }
+      });
+  }
   // Read the fixture on every call: LLM never supplies user/ticket facts.
   for (final entry in {'get_user': 'users', 'get_ticket': 'tickets'}.entries) {
     server.registerTool(entry.key,

@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 import re
+import time
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -26,13 +27,58 @@ def post(url, data, headers=None, timeout=150):
         return (json.loads(raw) if raw else None), response.headers
 
 
-def complete(messages, schema, output_tokens=512):
-    result, _ = post('http://127.0.0.1:11434/api/chat', {
-        'model': 'qwen3:4b', 'messages': messages, 'stream': False, 'think': False,
-        'format': schema, 'options': {'num_ctx': 8192, 'num_predict': output_tokens, 'temperature': 0}})
-    if result.get('done') is not True or result.get('done_reason') == 'length':
-        raise ValueError('Incomplete assistant response')
-    return json.loads(result['message']['content'])
+def validate_json(value, schema):
+    kind = schema.get('type')
+    valid = {'object': isinstance(value, dict), 'array': isinstance(value, list),
+             'string': isinstance(value, str), 'boolean': type(value) is bool,
+             'integer': type(value) is int,
+             'number': type(value) in (int, float) and math.isfinite(value),
+             'null': value is None}
+    if kind and not valid.get(kind, False):
+        raise ValueError('Wrong JSON value type')
+    if 'enum' in schema and value not in schema['enum']:
+        raise ValueError('JSON value outside enum')
+    if isinstance(value, dict):
+        properties = schema.get('properties', {})
+        if set(schema.get('required', [])) - set(value):
+            raise ValueError('Missing JSON field')
+        if schema.get('additionalProperties') is False and set(value) - set(properties):
+            raise ValueError('Unexpected JSON field')
+        for key in value.keys() & properties.keys():
+            validate_json(value[key], properties[key])
+    if isinstance(value, list) and 'items' in schema:
+        for item in value:
+            validate_json(item, schema['items'])
+    if isinstance(value, str) and not schema.get('minLength', 0) <= len(value) <= schema.get('maxLength', 1000000):
+        raise ValueError('JSON string length outside schema')
+
+
+def complete(messages, schema, output_tokens=512, context_tokens=8192, timeout=150):
+    # A length stop can occur AFTER a complete JSON object (trailing whitespace).
+    # Accept only complete schema-valid data; never repair/truncate a file edit.
+    deadline = time.monotonic() + timeout
+    attempts = list(messages)
+    for attempt in range(3):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('Structured generation deadline')
+        result, _ = post('http://127.0.0.1:11434/api/chat', {
+            'model': 'qwen3:4b', 'messages': attempts, 'stream': False, 'think': False,
+            'format': schema, 'options': {'num_ctx': context_tokens,
+                'num_predict': min(8192, max(512, output_tokens) * (2 ** attempt)),
+                'temperature': 0}}, timeout=remaining)
+        try:
+            if result.get('done') is not True:
+                raise ValueError('Upstream did not finish')
+            value = json.loads(result['message']['content'])
+            validate_json(value, schema)
+            return value
+        except (ValueError, KeyError, TypeError):
+            if attempt == 2:
+                raise ValueError('Модель не вернула полный JSON после трёх попыток; запись не выполнялась') from None
+            attempts = [*messages, {'role': 'user', 'content':
+                'Предыдущий ответ не удовлетворил JSON schema или оборвался. Верни полный короткий JSON '
+                'строго по schema. Без рассуждений, Markdown и пояснений. Не добавляй лишний текст.'}]
 
 
 def embed(texts):
