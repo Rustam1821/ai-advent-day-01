@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Day 35 · AI Event Manager</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body><main>
+<header><span>AI ADVENT · DAY 35</span><p class="muted"><time id="current-time"></time></p><h1>Ваши планы на выходные</h1><p>Реальные события → персональный отбор AI → Telegram</p></header>
+<section><h2>Предпочтения</h2><form id="profile">
+<div class="columns"><label>Город для поиска (латиницей)<input id="city" required maxlength="100" placeholder="Warsaw"></label><label>Часовой пояс города (IANA)<input id="timezone" required placeholder="Europe/Warsaw" list="zones"><datalist id="zones"><option value="Europe/Warsaw"><option value="Europe/Madrid"><option value="Europe/London"><option value="Europe/Berlin"><option value="America/New_York"><option value="Asia/Tokyo"></datalist></label></div>
+<label>Интересы через запятую<input id="interests" required maxlength="2000"></label>
+<label>Дополнительные пожелания<textarea id="preferences" rows="3" maxlength="2000" placeholder="Например: предпочитаю камерные концерты и мероприятия на английском"></textarea></label>
+<button type="submit" id="save">Сохранить предпочтения</button><span id="saved" role="status"></span></form>
+<p class="muted">После смены города укажите его часовой пояс. Подборка использует сохранённые настройки.</p>
+</section>
+<section><h2>Расписание отправки</h2><form id="schedule-form"><div class="columns">
+<label>День недели<select id="schedule-weekday" required><option value="0">Понедельник</option><option value="1">Вторник</option><option value="2">Среда</option><option value="3">Четверг</option><option value="4">Пятница</option><option value="5">Суббота</option><option value="6">Воскресенье</option></select></label>
+<label>Время<input id="schedule-time" type="time" required step="60"></label></div>
+<button id="save-schedule" type="submit">Сохранить расписание</button><span id="schedule-saved" role="status"></span></form>
+<p id="schedule"></p><p class="muted">Время указано в часовом поясе сохранённого города. Mac и сервис должны работать. Если выбранное время сегодня уже прошло, поиск запустится в течение 30 секунд после сохранения. Неизменная подборка повторно не отправляется.</p></section>
+<section><h2>Поиск и отправка</h2><p id="config"></p><button id="run">Найти мероприятия сейчас</button><p class="muted">Ручной запуск также отправляет подборку в Telegram. Поиск и AI могут занять несколько минут.</p><p id="status" role="status"></p><p id="error" role="alert"></p></section>
+<section><h2>Рекомендации AI <small id="period"></small></h2><p id="warnings"></p><div id="recommendations"></div></section>
+<section><details><summary>Все найденные события <span id="count"></span></summary><div id="events"></div></details></section>
+<section><details open><summary>Журнал этапов</summary><pre id="logs"></pre></details></section>
+<footer>Ticketmaster Discovery · DeepSeek · локальное хранение профиля и отзывов</footer>
+</main></body></html>
